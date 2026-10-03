@@ -1195,3 +1195,62 @@ test("unreadable link cannot masquerade as a published contract and binary input
     f.close();
   }
 });
+
+test("development proxy allows browser same-origin writes and rejects another origin", async () => {
+  const { createServer: createViteServer, loadConfigFromFile } =
+    await import("vite");
+  const root = mkdtempSync(join(tmpdir(), "relay-origin-"));
+  const app = createApp(root, { worker: false });
+  await new Promise<void>((resolve) =>
+    app.server.listen(0, "127.0.0.1", resolve),
+  );
+  const apiPort = (app.server.address() as { port: number }).port;
+  const loaded = await loadConfigFromFile({
+    command: "serve",
+    mode: "development",
+  });
+  assert.ok(loaded);
+  const proxy = loaded.config.server?.proxy?.["/api"];
+  assert.ok(proxy && typeof proxy === "object");
+  const vite = await createViteServer({
+    ...loaded.config,
+    configFile: false,
+    server: {
+      ...loaded.config.server,
+      port: 0,
+      strictPort: false,
+      proxy: { "/api": { ...proxy, target: `http://127.0.0.1:${apiPort}` } },
+    },
+  });
+  try {
+    await vite.listen();
+    const port = (vite.httpServer!.address() as { port: number }).port;
+    const origin = `http://127.0.0.1:${port}`;
+    const post = (requestOrigin: string) =>
+      fetch(origin + "/api/actions", {
+        method: "POST",
+        headers: {
+          Origin: requestOrigin,
+          "Sec-Fetch-Site": "same-origin",
+          "Content-Type": "application/json",
+          "Idempotency-Key": id(),
+        },
+        body: JSON.stringify({
+          type: "issue.create",
+          payload: { title: "Created through development proxy" },
+        }),
+      });
+    const response = await post(origin);
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(
+      (await response.json()).result.title,
+      "Created through development proxy",
+    );
+    assert.equal((await post("https://other.example")).status, 403);
+    assert.equal(app.store.read().issues.length, 1);
+  } finally {
+    await vite.close();
+    await app.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

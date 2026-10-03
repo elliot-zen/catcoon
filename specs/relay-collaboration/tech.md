@@ -14,7 +14,7 @@ Jev 官方 [HTTP API](https://docs.typesafe.ai/api) 为 POST https://api.typesaf
 
 ### 3.1 存储与单用户部署
 
-应用绑定 loopback；浏览器访问同源 HTTP，Vite 开发代理到 API。单用户本地开发工具，不提供多人认证。请求Host仅接受loopback主机；写操作检查 Origin，JSON body 最大 12MB（附件最大 5MB，base64），不接受任意命令参数。`data/relay.sqlite`（DATA_DIR 可配置）WAL、foreign_keys、busy_timeout。一个服务进程；事务 BEGIN IMMEDIATE 串行提交，异常回滚。SQLite 无需外部数据库。密钥独立写入 `data/secret.json`，目录 0700 文件 0600，不放入状态、事件或 Agent prompt。环境 TYPESAFE_API_KEY 可作为初始配置。
+应用绑定 loopback；浏览器访问同源 HTTP，Vite 开发代理到 API，`changeOrigin: false` 保留浏览器页面原始 Host，使代理后的 Origin 与 Host 一致；同源写入允许，其他 Origin 拒绝。单用户本地开发工具，不提供多人认证。请求Host仅接受loopback主机；写操作检查 Origin，JSON body 最大 12MB（附件最大 5MB，base64），不接受任意命令参数。`data/relay.sqlite`（DATA_DIR 可配置）WAL、foreign_keys、busy_timeout。一个服务进程；事务 BEGIN IMMEDIATE 串行提交，异常回滚。SQLite 无需外部数据库。密钥独立写入 `data/secret.json`，目录 0700 文件 0600，不放入状态、事件或 Agent prompt。环境 TYPESAFE_API_KEY 可作为初始配置。
 
 表结构：
 
