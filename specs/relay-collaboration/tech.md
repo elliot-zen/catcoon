@@ -86,7 +86,7 @@ Final 仅在 Issue 已 Start，且无未完成 task、无有效 Pending/Changes 
 
 `src/App.tsx` Issue 详情 的需求正文直接接 Activity；不渲染 Submit task、Publish artifact、Request approval、Request human input 工具栏或对应创建弹窗，也不将它们移入更多菜单。Start 通过 `issue.control` 建立初始 task；`Runtime.complete → ingest` 自动持久化 Agent 的成果、请求和后续 task，审批请求自动加入后续 task 的 dependencyIds；`request.decide` 保存 Human 决定，worker 重新评估依赖并经 Jev 选择下一 binding。无待办且满足条件时 worker 自动创建最终验收。人工只能通过现有请求答复/决定和运行控制介入正常轮转；无需调用四类创建操作推进下一步。既有 task.create、artifact.publish、request.create HTTP 契约保留以兼容已有调用；新设计不包含文档版本发布入口，冻结材料由自动交接产生。无结构化/空交接时保留可检查报告并请求核查，提示用户提供纠正目标或核查后重试，不引导用户使用已移除的手工提交入口。
 
-每秒 worker 对 started 非 paused 非 Done 的 Issue 评估待办；inflight Set 阻止同 Issue 重入。已运行/依赖未通过时 wait，不请求 Jev；Worktree锁在选中绑定的启动事务检查，竞争时记录等待并退避60秒。可用绑定选择候选携带实际 Agent 可用性，再发 Choice；选中后校验真实目录、分支、工具和材料（最多254绑定加human），state 包括需求、task、绑定 descriptions、有效决定、成果完整快照、未决请求和上下游。confidence>=0.65 且 choice 是现有 binding 才继续，低置信/冲突/无候选转 Human；原因是选择值及置信度而非伪造模型解释。Human 请求包含明确待办及绑定选项，选中后必须 submit；有效答案绑定已被移除不能派发，重新要求澄清。手动指定绑定仍检验 scope 和 dependencies。
+每秒 worker 对 started 非 paused 非 Done 的 Issue 评估待办；inflight Set 阻止同 Issue 重入。已运行/依赖未通过时 wait，不请求 Jev；Worktree锁在选中绑定的启动事务检查，竞争时记录等待并退避60秒。可用绑定选择候选携带实际 Agent 可用性，再发 Choice；选中后校验真实目录、分支、工具和材料（最多254绑定加human），state 包括需求、task、绑定 descriptions、有效决定、成果完整快照、未决请求和上下游。confidence>=0.65 且 choice 是现有 binding 才继续，低置信/冲突/无候选转 Human；原因是选择值及置信度而非伪造模型解释。Human 请求包含明确待办及绑定选项，选中后必须 submit；有效答案绑定已被移除不能派发，重新要求澄清。`Domain.action:request.decide` 先匹配请求 options 的准确 value，再查找唯一完整 label 或 `label · value` 显示行；仅 routeTask 的候选可按关联 binding.agentId → Agent.name 接受不区分大小写的唯一简称。简称候选只来自该请求的 options，不从 Issue 的其他绑定补全。多候选拒绝 400 INVALID_INPUT 并要求完整说明或 ID，事务回滚保持请求 Pending、任务未指定和通知未归档；确认后持久化规范绑定 ID，再复核所属 Issue、removed、暂停及依赖。普通选项和原生请求不按 Agent 简称猜测；无表或 API 字段变化，旧请求也使用同一解析逻辑。手动指定绑定仍检验 scope 和 dependencies。
 
 Jev 超时15秒、429/529/5xx/网络最多3次指数退避，记录每次实际尝试，不重试401/422；连接测试同一 endpoint 使用固定无敏感状态。失败记录等待原因不模拟成功，配置保存/恢复后重评估。每 task 最多8次执行、每 run30分钟、每次 Start/Resume 自动推进窗口最多64次实际运行；任务上限变为 waiting 并请求 Human，链式64次上限同时暂停 Issue；明确 Resume 开新窗口，不重放已有任务。Task Retry 在提供核查依据后可重置8次窗口。无进展/相同事项按 task/request ID 去重，不根据文本重复生成。Start/绑定变化/请求决定使对应 waiting任务重新评估；待解请求不反复调用 Jev。
 
@@ -123,7 +123,7 @@ Spec编辑 draft 按 worktree/document 键，读取已有文件，输入后 600m
 | 层级                | 场景/前置输入                                                | 预期结果与副作用                                      | 产品验收   |
 | ------------------- | ------------------------------------------------------------ | ----------------------------------------------------- | ---------- |
 | domain/API          | 空白title、双创建、同key重复/异请求、刷新                    | 拒绝非法输入、编号唯一、单对象、409冲突               | AC01–03    |
-| domain/files        | 两个repo、两个worktree、重复/空description、跨归属/分支错误  | 仅合法四项绑定、项目切换清空、真实路径唯一            | AC04–10/40 |
+| domain/files        | 两个repo、两个worktree、重复/空description、跨归属/分支错误  | 仅合法四项绑定、项目切换清空、真实路径唯一；路由简称唯一才接受，同工具多绑定/重名拒绝、准确ID优先、已移除候选不派发            | AC04–10/40 |
 | worker              | 保存binding未Start、不同descriptions、审批依赖、低confidence | 未启动、具体binding路由、禁止绕审批、Human一次        | AC11–14    |
 | runtime             | JSONL多步骤失败重试、部分事件、无验证材料                    | 保存实际步骤尝试，折叠不丢历史，未知不编造            | AC15–17    |
 | domain/API/browser  | input选择未提交、approval/final、两入口、Agent answer        | 未提交不变、同请求一致、Human单签、普通approval非Done | AC18–23    |
