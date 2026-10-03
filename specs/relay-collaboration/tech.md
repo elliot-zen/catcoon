@@ -113,7 +113,7 @@ Pause → control=paused。Stop → control=stopping、保存纠正与新的 tar
 
 Resume 在无未确认 stop / unknown 恢复依赖且核查条件满足时 control=enabled，将已确认停止的 correction.stopResolved=true，开启新的运行预算窗口，dirty=true；否则 409 RESULT_UNKNOWN / DEPENDENCY_BLOCKED。上下文明确旧停止指令已恢复，保留业务纠正及原目标，不把历史停止文本作为当前任务。Reopen 只在 Done 接受非空目标，递增 targetRevision，清除当前完成标记，保留历史，新 goal pending、control=paused。
 
-目标、固定 Spec、绑定或有效决定改变，递增相关 Issue.evaluationRevision，使旧模型决定失效。普通草稿、心跳、token 不递增。修改 title / description 通过 revision CAS；有效目标修订影响旧派发及验收。工作进行中保存新目标不改当前 Run.snapshot，须暂停 / 停止后调整其执行依据。
+目标、固定 Spec、绑定或有效决定改变，递增相关 Issue.evaluationRevision，使旧模型决定失效。普通草稿、心跳、token 不递增。修改 title / description 通过 revision CAS；有效目标修订影响旧派发及验收。正文编辑沿用 issue.update 的 revision CAS。有 active/unknown Run 时返回 WORKTREE_BUSY；Done 的目标编辑返回 DEPENDENCY_BLOCKED，必须使用 Reopen。新目标保存保留历史 Run 快照与文件；将旧目标的 Pending / Changes requested / Cancelled 请求置 Superseded 并归档通知，未终结事项 cancelled，已开始时创建新 goal 事项。旧 targetRevision 的批准不授权新目标；control 保持，dirty 触发后续重评估。相同正文不增加 targetRevision 或重建事项。
 
 Jev 响应处理在事务内验证当前 Evaluation 的目标覆盖；finalReady 检查全部必需非 goal 事项、当前目标下的实现批准、无业务阻塞、无 active/unknown Run 或 busy session、非空可检查成果与验证说明。历史目标的执行授权不要求为 Reopen 的新目标重复批准。Jev 选择 final 时在同事务将 goal 标 done 并创建 final Request；批准前再次核查目标与材料引用。final Request changes 重新打开 goal、建立 sourceId=Request.id 的修订事项。
 
@@ -444,6 +444,8 @@ request.decide={requestId,revision,decision:"answer"|"approve"|"changes"|"cancel
 
 原有 Spec 字段支持按项目搜索已有 Spec / 固定版本或输入新名创建，事务失败不留下孤立 Worktree；新 Spec + Worktree 提交用领域组合动作同事务保存，创建实体接口供其他调用使用。固定版本与草稿编辑状态在已有 Bound spec / 状态区域说明，不增独立版本面板。草稿按 specId/document 保存，600ms 防抖 CAS；系统确认才能展示保存成功。
 
+src/issue-description.tsx 在原正文位置显示编辑图标；编辑时同位置显示文本框与保存图标，保留换行。打开时冻结正文和 Issue.revision；正文更新通过 POST /api/actions 的 action("issue.update",{issueId,revision,description})，不能使用轮询后的新 revision 悄悄覆盖旧输入。失焦、保存图标、Ctrl / Cmd + Enter 提交；pending ref 防止重复提交，Esc 取消，未确认输入按 Issue ID 保存到 sessionStorage。失败保留输入；冲突不自动重试，退出再打开时以最新服务端 revision 重新核对后提交。成功只清理已确认的同一份输入，不覆盖提交期间新输入。有活跃 / 未知执行或 Done 时编辑图标禁用并说明停止 / Reopen。
+
 UI 其余行为沿用 PRODUCT §10。Agent / Project Health 定期真实检查；Search / 列表 / 统计从实体去重计算；主题与语言 localStorage；评论、请求与绑定草稿按所属 ID 隔离。新增原型外入口必须另行确认。
 
 ## 10. 恢复与一致性
@@ -484,7 +486,7 @@ final、批准升级、关联请求答复、报告应用与通知状态均在单
 | recovery/native / P17        | turn/start 回应丢失、失联 / 未确认停止后重启；原生分别报告 active / terminal / missing。                                 | 精确身份恢复、不重发 prompt；unknown 锁保留，已知终态只摄入一次，reconcile 无 evidence 拒绝。                                           |
 | native/domain / P18          | 同 Issue 两候选、两个 Issue 同 canonical path，终端活跃 turn 与原生额外 turn。                                           | 最多一个平台执行、目录锁互斥；外部观察 origin=terminal，不应用平台报告或当作 goal 完成；Pi 恢复不宣称并发 TUI 附着。                    |
 | domain / P19                 | Done 的迟到事件 / 评论 / pin 变化，空 Reopen、合法新目标、Resume。                                                       | 保持 Done；空目标拒绝，合法 Reopen 增 targetRevision、新 goal、control=paused，历史不变。                                               |
-| browser/API / P20            | 在相同视口对照只读设计页面 / 弹窗，实际提交和失败、切换对象、搜索 / 偏好 / 统计。                                        | 布局只有已批准例外；不新增 task / artifact / session 入口，保存真实，输入隔离、去重统计与偏好正确，token 不更新业务排序。               |
+| browser/API / P20            | 在相同视口对照只读设计页面 / 弹窗，正文保存 / Esc 取消 / 并发冲突 / 重载输入，实际提交和失败、切换对象、搜索 / 偏好 / 统计。                                        | 布局只有已批准例外；不新增 task / artifact / session 入口，保存真实，输入隔离、去重统计与偏好正确，token 不更新业务排序。               |
 | specs/domain / P23           | V2 changes → V3 proposal；单批准 / 单升级、跨 Issue / scope 批准和无关草稿。                                             | 修订可执行而被拒版本不可实施；新版本独立批准，pin 与批准不可相互推断，适用授权只在准确范围有效。                                        |
 | report/API / P24             | 同 toolCallId 重送、同幂等键异内容、错误 draftRevision / specId / requestId，混入 Agent approve / pin / final。          | 报告原子应用或拒绝，无部分版本 / 请求；原生事实独立保存，同调用只发布一次，宿主不信任自报 runId。                                       |
 | domain/native / P25          | Stop 保存纠正，clear_queue / abort / interrupt 后停止确认丢失；核查后 Resume。                                           | stopping 与锁保持到准确确认；纠正不成为 stop 任务，原地副作用保留，stopResolved 后上下文只保留业务纠正和历史停止。                      |
