@@ -2,7 +2,7 @@
 
 ## 1. 代码组织
 
-根目录是实际应用，`/home/elliot/workspace/tmp/ui-design/src/App.tsx` 是只读视觉依据。Node.js 24 原生 TypeScript 与 SQLite；React 19、Vite、Tailwind 4。`server/store.ts` 管持久化、事务及幂等；`server/domain.ts` 管 Issue、绑定、请求、任务、成果与状态；`server/files.ts` 管 Git 目录验证和 Spec CAS；`server/jev.ts` 只做类型化路由；`server/runtime.ts` 管 Codex/Pi 子进程与执行锁；`server/index.ts` 管 HTTP 与启动恢复；`src/` 管视图、双语、草稿和真实 API。界面不承担审批、路径验证或调度的权威判断。
+根目录是实际应用，`/home/elliot/workspace/tmp/ui-design/src/App.tsx` 是只读视觉依据。Node.js 24 原生 TypeScript 与 SQLite；React 19、Vite、Tailwind 4。`server/store.ts` 管持久化、事务及幂等；`server/domain.ts` 管 Issue、绑定、请求、任务、成果与状态；`server/files.ts` 管 Git 目录验证和 Spec CAS；`server/jev.ts` 只做类型化路由；`server/runtime.ts` 管 Codex/Pi 子进程与执行锁；`server/index.ts` 管 HTTP 与启动恢复；`src/` 管视图、双语、草稿和真实 API；`src/activity.ts` 只按持久化 ID 构建 Activity 展示分组，不参与调度或决定。界面不承担审批、路径验证或调度的权威判断。
 
 ## 2. 已有设计与边界
 
@@ -32,7 +32,7 @@ Jev 官方 [HTTP API](https://docs.typesafe.ai/api) 为 POST https://api.typesaf
 - Binding `{id,issueId,projectId,worktreeId,agentId,description,revision,removed}`，相同生效 issue/project/worktree/agent 唯一；运行 snapshot 冻结上述四项、实际名称路径。
 - Task `{id,issueId,text,status,bindingId?,dependencyIds:string[],sourceId?,requestId?,attempts,createdAt}`；pending/running/waiting/done/cancelled/unknown。依赖 request Approved/Answered 或 task done 后才可执行；取消请求不算通过。问题请求关联 task 与 resume task，用于交接完成后恢复。
 - Run `{id,issueId,taskId,bindingId,snapshot,context,status,pid?,sessionId?,nativeTurnId?,stopRequested?,startedAt,finishedAt?,result?,reason?}`；starting/running/stopping/completed/failed/stopped/unknown。历史 context 与 snapshot 不随绑定变更；终态重复/晚到事件不重开 Done。
-- Event `{id,issueId,source,type,text,at,receivedAt,runId?,taskId?,bindingId?,requestId?,data?}`：原始顺序存储，迟到 at 与 receivedAt 均保留；steps 来自实际 JSONL，不构造内部思考。长输出折叠；每个上报步骤保存最多64KB并标明截断（完整输出在原生工具支持保存时由该工具提供；Relay 对超限事件不承诺完整终端归档），总 prompt 256KB，超限请求人工提供明确材料，不能静默截断必需资料。
+- Event `{id,issueId,source,type,text,at,receivedAt,runId?,taskId?,bindingId?,requestId?,data?}`：原始顺序存储，迟到 at 与 receivedAt 均保留；steps 来自实际 JSONL，不构造内部思考。UI 按 product §8.3 的一次执行/请求分组，原始事件仍逐条持久化；长输出折叠；每个上报步骤保存最多64KB并标明截断（完整输出在原生工具支持保存时由该工具提供；Relay 对超限事件不承诺完整终端归档），总 prompt 256KB，超限请求人工提供明确材料，不能静默截断必需资料。
 - Artifact `{id,issueId,runId?,bindingId?,kind,title,content,version,createdAt,supersedesId?}`：SHA256 内容版本，冻结文本、diff、测试说明；Agent 来源标为未独立验证。新版本显式替代指定旧 artifact 时关联 Pending 请求 Superseded，不因文件草稿变更失效。替代审批所依据的成果时，相关活跃执行进入 stopping，保持旧 context 和写锁，等待确认停止及核查。
 - Request `{id,issueId,taskId?,kind,title,body,options?,artifactIds,scope,action,status,answer?,decision?,decidedBy?,decidedAt?,revision,source,recipient,supersedesId?,supersededById?,native?}`；kind input/approval/final，status Pending/Answered/Approved/Changes requested/Superseded/Cancelled，原生请求另有 Resolved externally。scope 是 task ID 数组或 issue。审批必须引用至少一个可读取冻结 artifact，action 必填。最终验收引用汇总材料。
 - Notification `{id,requestId,issueId,category,read,archived,createdAt}`，同请求仅一个通知。读取路径先 notification.requestId 再请求；Archive 不修改 request。
@@ -116,6 +116,10 @@ project.create realpath + git rev-parse验证，commonDir确定仓库身份。wo
 
 Spec编辑 draft 按 worktree/document 键，读取已有文件，输入后 600ms 防抖 CAS 自动保存，已有状态位置显示保存结果；冲突停止自动重试并保留草稿，需显式 API 核对后解决。Agent 发布成果独立存数据库固定版本。附件上传成功才成为Issue材料，二进制不虚假转换为已阅读文本：先创建关联任务的Human请求，获得必要内容的文本答复后再执行；纯URL成果拒绝为 MATERIAL_UNREADABLE，必须发布可读正文或快照。主题和语言 localStorage，导航和系统活动按新设计提供双语，用户文本不翻译。导航 hash 保存 Issue 深链接，其他导航沿用设计的内存状态，数据始终按实体id关联，评论/请求输入与选择按对象键隔离。列表分组/搜索/项目去重及计数按product §§5/10/11/16；窄屏允许侧栏收起与详情纵向布局。布局完整复用新设计；未展开的高级图标不显示虚假成功，不自行增加可见界面。
 
+### 3.7 Activity 展示分组
+
+`src/activity.ts:groupActivity` 读取公开 State 的 runs/events/tasks/artifacts/requests，先按 requestId 把请求生命周期聚到该请求的独立行；其余通过 Event.runId（或 artifact.runId、生成任务的 sourceId）关联到准确 Run，返回一个以 runId 为稳定 key 的执行行，采用 Run.snapshot 与当前 status，绝不按 Agent 名称/正文合并。顶层位置取首次相关事件的原始位置，子记录按持久化顺序；后续输出只追加子记录并更新当前状态，所有请求仍默认展开可操作。终端事件在 Event.data 增加 sessionId/nativeTurnId（字符串）作为准确分组关联，以两者为 key；旧无关联记录沿用普通行，无数据库迁移或 HTTP 字段删除。`src/App.tsx:Event` 复用已有 Chevron 控制，执行行初始折叠，请求行与普通事件沿用默认展开；稳定 key 保留轮询期间展开状态。展开体显示实际 Agent 回答、工具可见事件、生命周期、固定成果与交接；解析 step 的公开 agentMessage 或 Pi assistant 文本为可读回答，其他工具输出及异常/截断记录保留。终态无完整步骤时展示已保存的 Run.result，不构造过程；非原生私有推理内容继续过滤。请求更新显示同一 Request 当前卡片和决定历史，Approve/Request changes 不新增入口。
+
 ## 4. 测试
 
 使用Node test临时SQLite、临时Git仓库和伪JSONL子进程，注入Jev fetch，不执行真实开发任务。浏览器Playwright验证主要导航、真实API与视觉布局。
@@ -125,7 +129,7 @@ Spec编辑 draft 按 worktree/document 键，读取已有文件，输入后 600m
 | domain/API          | 空白title、双创建、同key重复/异请求、刷新                    | 拒绝非法输入、编号唯一、单对象、409冲突               | AC01–03    |
 | domain/files        | 两个repo、两个worktree、重复/空description、跨归属/分支错误  | 仅合法四项绑定、项目切换清空、真实路径唯一；路由简称唯一才接受，同工具多绑定/重名拒绝、准确ID优先、已移除候选不派发            | AC04–10/40 |
 | worker              | 保存binding未Start、不同descriptions、审批依赖、低confidence | 未启动、具体binding路由、禁止绕审批、Human一次        | AC11–14    |
-| runtime             | JSONL多步骤失败重试、部分事件、无验证材料                    | 保存实际步骤尝试，折叠不丢历史，未知不编造            | AC15–17    |
+| runtime             | JSONL多步骤失败重试、部分事件、无验证材料；同 Run 多回答/调用及独立审批                    | 保存实际步骤尝试；每次执行一行，子事件不丢失；请求独立一行，轮询不收起用户已展开内容；未知不编造            | AC15–17    |
 | domain/API/browser  | input选择未提交、approval/final、两入口、Agent answer        | 未提交不变、同请求一致、Human单签、普通approval非Done | AC18–23    |
 | domain/API          | superseded、并发决定、read/archive、两阻塞依赖               | 拒绝过期/第二决定，通知不批准，只解除对应依赖         | AC24–27    |
 | worker/runtime      | 跨binding问题、缺spec材料、替换activebinding、移除           | 因果关联恢复/请求材料，snapshot不变，旧run确认后切换  | AC28–32    |
@@ -139,7 +143,7 @@ Spec编辑 draft 按 worktree/document 键，读取已有文件，输入后 600m
 
 ## 5. 验证材料对应
 
-`tests/core.test.ts` 使用临时仓库/数据库验证创建与幂等、绑定归属和快照、审批/归档/并发决定、回答提交、最终验收及修订、版本替代依赖、CAS及路径逃逸、跨Issue写锁和重启、Agent问题交接与Human升级、失败不重放、Jev协议及置信度、过期异步判断、交接原子性、运行次数保护，以及真实可控子进程的JSONL步骤与停止确认。`scripts/browser-test.mjs` 验证真实HTTP与浏览器的空状态、创建/绑定、审批同步、Spec保存及草稿隔离、搜索、偏好和窄屏核心操作。Mock Jev与可控执行器不代表真实模型端到端认证已经验证。
+`tests/core.test.ts` 使用临时仓库/数据库验证创建与幂等、绑定归属和快照、审批/归档/并发决定、回答提交、最终验收及修订、版本替代依赖、CAS及路径逃逸、跨Issue写锁和重启、Agent问题交接与Human升级、失败不重放、Jev协议及置信度、过期异步判断、交接原子性、运行次数保护，以及真实可控子进程的JSONL步骤与停止确认。`tests/activity.test.ts` 验证按准确运行/请求/原生 turn 分组、跨绑定/重试/Issue 隔离、乱序与旧记录保留、回答内容解析。`scripts/browser-test.mjs` 验证真实HTTP与浏览器的空状态、创建/绑定、审批同步、Spec保存及草稿隔离、搜索、偏好和窄屏核心操作。Mock Jev与可控执行器不代表真实模型端到端认证已经验证。
 
 部署及工具授权范围见根目录 `README.md`“自动交接协议”。实现使用单进程SQLite业务文档，适用于当前本地单用户范围；不提供多实例任务恢复，也不提供第三方编辑器参与的文件分布式锁。
 
