@@ -6,7 +6,16 @@ import { Store, AppError, hash, text, find, fail, now } from "./store.ts";
 import { Domain } from "./domain.ts";
 import { Runtime } from "./runtime.ts";
 import { evaluate } from "./jev.ts";
-import { readSpec, saveSpec, directories } from "./files.ts";
+import { directories } from "./files.ts";
+import {
+  readDocument,
+  saveDraft,
+  createSpec,
+  publishVersion,
+  specReference,
+  directoryIdle,
+  dirty,
+} from "./specs.ts";
 export function createApp(
   dataDir: string,
   options: { worker?: boolean; fetcher?: typeof fetch } = {},
@@ -37,11 +46,97 @@ export function createApp(
           );
         if (url.pathname === "/api/spec")
           return send(
-            readSpec(
-              find(store.read().worktrees, url.searchParams.get("worktreeId")),
+            readDocument(
+              store.read(),
+              url.searchParams.get("specId"),
               url.searchParams.get("document"),
+              url.searchParams.get("versionId"),
             ),
           );
+        if (url.pathname === "/api/specs")
+          return send(
+            store
+              .read()
+              .specs.filter(
+                (s) => s.projectId === url.searchParams.get("projectId"),
+              )
+              .map((s) => ({
+                id: s.id,
+                projectId: s.projectId,
+                name: s.name,
+                latestVersionId: s.latestVersionId,
+                draftRevision: s.draft.revision,
+                baseVersionId: s.draft.baseVersionId,
+                createdAt: s.createdAt,
+                updatedAt: s.updatedAt,
+                versions: store
+                  .read()
+                  .specVersions.filter((v) => v.specId === s.id)
+                  .map(({ product, tech, ...v }) => v),
+              })),
+          );
+        const itemPath = url.pathname.match(
+          /^\/api\/(runs|issues)\/([^/]+)\/items$/,
+        );
+        if (itemPath) {
+          if (itemPath[1] === "issues") {
+            find(store.read().issues, itemPath[2]);
+            return send(runtime.streams.snapshot(itemPath[2]));
+          }
+          const r = find(store.read().runs, itemPath[2]);
+          const snapshot = runtime.streams.snapshot(r.issueId);
+          return send({
+            items: runtime.streams.items(r.id),
+            lastSeq: snapshot.lastSeq,
+          });
+        }
+        if (url.pathname === "/api/stream") {
+          const issueId = text(url.searchParams.get("issueId"), "Issue");
+          find(store.read().issues, issueId);
+          let cursor = Number(
+            req.headers["last-event-id"] || url.searchParams.get("after") || 0,
+          );
+          if (!Number.isSafeInteger(cursor) || cursor < 0)
+            fail(400, "INVALID_INPUT", "Invalid stream cursor");
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          });
+          res.write(": connected\n\n");
+          const emit = (payload: any) => {
+            if (payload.issueId !== issueId || payload.seq <= cursor) return;
+            cursor = payload.seq;
+            if (
+              !res.write(
+                "id: " +
+                  payload.seq +
+                  "\nevent: stream\ndata: " +
+                  JSON.stringify(payload) +
+                  "\n\n",
+              )
+            )
+              res.destroy();
+          };
+          const changed = () => {
+            if (!res.write("event: state.changed\ndata: {}\n\n")) res.destroy();
+          };
+          runtime.streams.on("stream", emit);
+          store.changes.on("change", changed);
+          for (const payload of runtime.streams.replay(issueId, cursor))
+            emit(payload);
+          const heartbeat = setInterval(
+            () => res.write(": heartbeat\n\n"),
+            15000,
+          );
+          heartbeat.unref();
+          res.on("close", () => {
+            clearInterval(heartbeat);
+            runtime.streams.off("stream", emit);
+            store.changes.off("change", changed);
+          });
+          return;
+        }
         if (url.pathname.startsWith("/api/attachments/")) {
           const a = find(
             store.read().attachments,
@@ -97,7 +192,7 @@ export function createApp(
         if (Buffer.byteLength(raw) > 12 * 1024 * 1024)
           fail(413, "INVALID_INPUT", "Request too large");
       }
-      let body;
+      let body: any;
       try {
         body = JSON.parse(raw);
       } catch {
@@ -113,13 +208,81 @@ export function createApp(
       try {
         const fp = hash(JSON.stringify({ path: url.pathname, body }));
         if (url.pathname === "/api/spec" && req.method === "PUT") {
-          const cached = store.cached(key, fp);
-          if (cached !== undefined) result = cached;
-          else {
-            const w = find(store.read().worktrees, body.worktreeId);
-            result = saveSpec(w, body.document, body.content, body.version);
-            store.change(() => result, key, fp);
-          }
+          result = store.change((s) => saveDraft(s, body), key, fp);
+        } else if (url.pathname === "/api/specs" && req.method === "POST") {
+          result = store.change(
+            (s) => createSpec(s, body.projectId, body.name),
+            key,
+            fp,
+          );
+        } else if (
+          /^\/api\/specs\/[^/]+\/versions$/.test(url.pathname) &&
+          req.method === "POST"
+        ) {
+          result = store.change(
+            (s) => ({
+              version: publishVersion(
+                s,
+                url.pathname.split("/")[3],
+                body.draftRevision,
+              ),
+              revision: s.revision + 1,
+            }),
+            key,
+            fp,
+          );
+        } else if (
+          /^\/api\/worktrees\/[^/]+\/spec$/.test(url.pathname) &&
+          req.method === "POST"
+        ) {
+          result = store.change(
+            (s) => {
+              const w = find(s.worktrees, url.pathname.split("/")[3]);
+              if (w.revision !== body.revision)
+                fail(409, "STALE_VERSION", "Worktree changed");
+              text(body.reason, "Upgrade reason");
+              specReference(s, w.projectId, body.specId, body.versionId);
+              directoryIdle(store, s, w);
+              w.specId = body.specId;
+              w.specVersionId = body.versionId;
+              w.revision++;
+              const affectedIssueIds = [
+                ...new Set(
+                  s.bindings
+                    .filter((b) => b.worktreeId === w.id && !b.removed)
+                    .map((b) => b.issueId),
+                ),
+              ];
+              for (const issueId of affectedIssueIds)
+                dirty(s, issueId, "spec.upgraded");
+              return {
+                worktree: w,
+                affectedIssueIds,
+                revision: s.revision + 1,
+              };
+            },
+            key,
+            fp,
+          );
+        } else if (
+          /^\/api\/runs\/[^/]+\/(report|tool)$/.test(url.pathname) &&
+          req.method === "POST"
+        ) {
+          const runId = url.pathname.split("/")[3];
+          if (
+            !runtime.runTokens.has(runId) ||
+            req.headers.authorization !==
+              "Bearer " + runtime.runTokens.get(runId)
+          )
+            fail(403, "SCOPE_REJECTED", "Use the current Run tool credentials");
+          result = url.pathname.endsWith("/tool")
+            ? runtime.handleTool(
+                runId,
+                body.tool,
+                body.args,
+                text(body.callId, "Tool call ID"),
+              )
+            : domain.report(runId, body, key);
         } else if (url.pathname === "/api/actions" && req.method === "POST") {
           const p = body.payload || {};
           if (
@@ -139,6 +302,8 @@ export function createApp(
                       testedAt: "",
                       connection: "not tested",
                     };
+                    for (const i of s.issues)
+                      dirty(s, i.id, "jev.configuration");
                     return { configured: true };
                   },
                   key,
@@ -150,8 +315,13 @@ export function createApp(
                   await evaluate(
                     store.key(),
                     { test: "Connection check" },
-                    { ok: "Connection check" },
-                    undefined,
+                    {
+                      route: {
+                        type: "choice",
+                        instructions: "Connection check",
+                        criteria: { ok: "Connection check" },
+                      },
+                    },
                     options.fetcher,
                   );
                 } catch (e) {
@@ -162,6 +332,8 @@ export function createApp(
                   (s) => {
                     s.settings.connection = connection;
                     s.settings.testedAt = now();
+                    for (const i of s.issues)
+                      dirty(s, i.id, "jev.configuration");
                     return { connection };
                   },
                   key,
@@ -182,7 +354,11 @@ export function createApp(
       } finally {
         release();
       }
-      return send({ result, revision: store.read().revision });
+      return send(
+        url.pathname === "/api/actions"
+          ? { result, revision: store.read().revision }
+          : result,
+      );
     } catch (e) {
       const a =
         e instanceof AppError
@@ -204,6 +380,11 @@ export function createApp(
       );
     }
   });
+  server.on("listening", () => {
+    const address = server.address();
+    if (address && typeof address !== "string")
+      runtime.apiEndpoint = "http://127.0.0.1:" + address.port;
+  });
   const timers: ReturnType<typeof setInterval>[] = [];
   if (options.worker !== false) {
     timers.push(
@@ -220,7 +401,10 @@ export function createApp(
     close: async () => {
       for (const t of timers) clearInterval(t);
       runtime.shutdown();
-      await new Promise<void>((r) => server.close(() => r()));
+      await new Promise<void>((r) => {
+        server.closeAllConnections();
+        server.close(() => r());
+      });
       store.close();
     },
   };

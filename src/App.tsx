@@ -1,5 +1,5 @@
 import { eventNames, zh } from "./i18n";
-import { groupActivity, stepContent, type ActivityEntry } from "./activity";
+import { groupActivity, type ActivityEntry } from "./activity";
 import DirectoryField, {
   Backend,
   useBackend,
@@ -39,7 +39,6 @@ import {
   EyeOff,
   FileText,
   Folder,
-  FolderOpen,
   GitBranch,
   Inbox,
   LayoutList,
@@ -59,7 +58,6 @@ import {
   SlidersHorizontal,
   Square,
   SquarePen,
-  Tag,
   Sun,
   UserRound,
   ShieldCheck,
@@ -201,43 +199,16 @@ function ActivityRecord({
   nested?: boolean;
 }) {
   const { data } = useBackend();
-  const content = stepContent(e);
   return (
     <div className={nested ? "mt-3" : ""}>
       {nested && (
         <div className="text-xs text-muted-foreground">
-          {content.answer !== undefined
-            ? language === "zh"
-              ? "回答"
-              : "Response"
-            : `${e.source} ${activityName(e.type, language)}`}
-          <span className="px-1">·</span>
-          {time(e.at)}
+          {e.source} {activityName(e.type, language)} · {time(e.at)}
         </div>
       )}
-      {content.answer !== undefined ? (
-        <div className="mt-0.5 whitespace-pre-wrap break-words text-[13px] text-foreground">
-          {content.answer}
-        </div>
-      ) : (
-        <div className="mt-0.5 whitespace-pre-wrap break-words text-[13px] text-muted-foreground">
-          {e.text}
-        </div>
-      )}
-      {content.output !== undefined ? (
-        <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px]">
-          {content.output}
-        </pre>
-      ) : (
-        e.data != null &&
-        content.answer === undefined && (
-          <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px]">
-            {typeof e.data === "string"
-              ? e.data
-              : JSON.stringify(e.data, null, 2)}
-          </pre>
-        )
-      )}
+      <div className="mt-0.5 whitespace-pre-wrap break-words text-[13px] text-muted-foreground">
+        {e.text}
+      </div>
       {e.type === "attachment.created" && (
         <a
           className="text-xs text-blue-600"
@@ -273,6 +244,65 @@ function ActivityRecord({
   );
 }
 
+function RunStream({ runId }: { runId: string }) {
+  const { streamItems } = useBackend();
+  return (
+    <>
+      {(streamItems[runId] || []).map((item) => (
+        <div key={item.itemKey} className="mt-3">
+          <div className="text-xs text-muted-foreground">
+            {item.kind === "tool"
+              ? item.metadata.title
+              : item.kind === "thinking"
+                ? "Thinking"
+                : "Answer"}
+            {item.kind === "tool" && " · " + item.status}
+          </div>
+          {item.kind === "tool" && item.metadata.parameters && (
+            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-[11px]">
+              {typeof item.metadata.parameters === "string"
+                ? item.metadata.parameters
+                : JSON.stringify(item.metadata.parameters, null, 2)}
+            </pre>
+          )}
+          {item.content && (
+            <pre
+              className={
+                "mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-words " +
+                (item.kind === "answer"
+                  ? "text-[13px] text-foreground"
+                  : "text-[11px] text-muted-foreground")
+              }
+            >
+              {item.content}
+            </pre>
+          )}
+          {item.metadata.exitCode !== undefined && (
+            <div className="text-xs text-muted-foreground">
+              Exit {item.metadata.exitCode}
+            </div>
+          )}
+        </div>
+      ))}
+    </>
+  );
+}
+function actionDescription(request: RelayRequest) {
+  const a = request.action;
+  if (!a) return "";
+  if (a.type === "native") return a.method;
+  if (a.type === "review") return a.description;
+  if (a.type === "final")
+    return "Accept the reviewed goal and evidence as Done";
+  return (
+    (a.type === "approve_spec_and_upgrade"
+      ? "Approve version and upgrade listed Worktrees"
+      : "Approve the fixed version") +
+    " · " +
+    a.specVersionId
+  );
+}
+
 function ActivityRow({
   entry,
   language,
@@ -280,7 +310,7 @@ function ActivityRow({
   entry: ActivityEntry;
   language: "en" | "zh";
 }) {
-  const { data } = useBackend();
+  const { data, streamItems } = useBackend();
   const first = entry.kind === "event" ? entry.event : entry.events[0];
   const source =
     entry.kind === "run" ? entry.run.snapshot.agentName : first.source;
@@ -288,34 +318,22 @@ function ActivityRow({
   if (entry.kind === "run")
     type =
       "run." +
-      ({ starting: "scheduled", running: "started" }[entry.run.status] ||
-        entry.run.status);
-  if (entry.kind === "terminal") {
-    const completed = entry.events.findLast(
-      (e) => e.type === "session.completed",
-    );
-    type = completed
-      ? "run." +
-        (completed.text === "failed"
-          ? "failed"
-          : completed.text === "interrupted"
-            ? "stopped"
-            : "completed")
-      : "run.started";
-  }
+      ((
+        { starting: "scheduled", running: "started" } as Record<string, string>
+      )[entry.run.status] || entry.run.status);
   return (
     <Event
       avatar={source[0] || "S"}
       tone={
         source === "Triage" ? "violet" : source === "Codex" ? "green" : "dark"
       }
-      initiallyCollapsed={entry.kind === "run" || entry.kind === "terminal"}
+      initiallyCollapsed={entry.kind === "run"}
       activityId={entry.id}
     >
       <div>
         <span className="font-medium text-foreground">{source}</span>{" "}
         {activityName(type, language)}
-        {(entry.kind === "run" || entry.kind === "terminal") && (
+        {entry.kind === "run" && (
           <span>
             {" "}
             · {entry.events.length} {language === "zh" ? "条记录" : "records"}
@@ -348,14 +366,24 @@ function ActivityRow({
               {entry.run.reason && "\n" + entry.run.reason}
             </div>
           )}
-          {entry.events.map((e) => (
-            <ActivityRecord key={e.id} event={e} language={language} nested />
-          ))}
+          {entry.kind === "run" && <RunStream runId={entry.run.id} />}
+          {entry.events
+            .filter(
+              (e) =>
+                e.type !== "artifact.published" ||
+                !data.artifacts.some(
+                  (a) =>
+                    a.id === (e.data as { artifactId?: string })?.artifactId &&
+                    (a.id === entry.run.resultArtifactId ||
+                      a.provenance === "Native tool observation"),
+                ),
+            )
+            .map((e) => (
+              <ActivityRecord key={e.id} event={e} language={language} nested />
+            ))}
           {entry.kind === "run" &&
             entry.run.result &&
-            !entry.events.some(
-              (e) => stepContent(e).answer === entry.run.result,
-            ) && (
+            !streamItems[entry.run.id]?.length && (
               <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[13px]">
                 {entry.run.result}
               </pre>
@@ -452,12 +480,21 @@ function ApprovalCard({ request }: { request: RelayRequest }) {
         ))}
         <div className="mt-2 text-xs text-muted-foreground">
           Blocking scope:{" "}
-          {Array.isArray(request.scope)
-            ? request.scope
-                .map((id) => data.tasks.find((t) => t.id === id)?.text || id)
-                .join(", ")
-            : "Whole issue"}
-          {request.action && " · " + request.action}
+          {request.scope === "issue"
+            ? "Whole issue"
+            : [
+                ...request.scope.taskIds.map(
+                  (id) => data.tasks.find((t) => t.id === id)?.text || id,
+                ),
+                ...request.scope.bindingIds.map(
+                  (id) =>
+                    data.bindings.find((b) => b.id === id)?.description || id,
+                ),
+                ...request.scope.worktreeIds.map(
+                  (id) => data.worktrees.find((w) => w.id === id)?.name || id,
+                ),
+              ].join(", ")}
+          {request.action && " · " + actionDescription(request)}
         </div>
         {request.artifactIds
           .map((id) => data.artifacts.find((a) => a.id === id))
@@ -1102,6 +1139,9 @@ type Spec = {
   name: string;
   product: string;
   tech: string;
+  id?: string;
+  versionId?: string;
+  versionNumber?: number;
 };
 
 type Worktree = {
@@ -1157,15 +1197,6 @@ function ProjectsList({
   const { busy } = useBackend();
   const [name, setName] = useDraft("project-name");
   const [path, setPath] = useDraft("project-path");
-  const directoryInput = useRef<HTMLInputElement | null>(null);
-
-  const chooseDirectory = (files: FileList | null) => {
-    const firstFile = files?.[0];
-    if (!firstFile) return;
-    const root = firstFile.webkitRelativePath.split("/")[0] || firstFile.name;
-    setPath(root);
-    if (!name) setName(root);
-  };
 
   const createProject = async () => {
     if (!name.trim() || !path.trim()) return;
@@ -1323,27 +1354,32 @@ function ProjectDetail({
   );
   const [document, setDocument] = useState<"product" | "tech">("product");
   const [createOpen, setCreateOpen] = useState(false);
-  const { busy } = useBackend();
+  const { busy, data } = useBackend();
   const [name, setName] = useDraft("worktree-name-" + project.id);
   const [branch, setBranch] = useDraft("worktree-branch-" + project.id);
   const [path, setPath] = useDraft("worktree-path-" + project.id);
   const [specName, setSpecName] = useDraft("worktree-spec-" + project.id);
-  const directoryInput = useRef<HTMLInputElement | null>(null);
   const selectedWorktree =
     project.worktrees.find((worktree) => worktree.id === selectedWorktreeId) ??
     project.worktrees[0];
 
   const spec = useSpec(selectedWorktree?.id, document);
-
-  const chooseDirectory = (files: FileList | null) => {
-    const firstFile = files?.[0];
-    if (!firstFile) return;
-    setPath(firstFile.webkitRelativePath.split("/")[0] || firstFile.name);
-  };
+  const specOptions = data.specs
+    .filter((s) => s.projectId === project.id)
+    .flatMap((s) =>
+      data.specVersions
+        .filter((v) => v.specId === s.id)
+        .map((v) => ({
+          label: s.name + " · V" + v.number + " · " + s.id,
+          specId: s.id,
+          versionId: v.id,
+        })),
+    );
 
   const addWorktree = async () => {
     if (!name.trim() || !branch.trim() || !path.trim() || !specName.trim())
       return;
+    const selectedSpec = specOptions.find((o) => o.label === specName);
     const id = `wt-${Date.now()}`;
     const result = await onAddWorktree(project.id, {
       id,
@@ -1352,6 +1388,8 @@ function ProjectDetail({
       path: path.trim(),
       spec: {
         name: specName.trim(),
+        id: selectedSpec?.specId,
+        versionId: selectedSpec?.versionId,
         product: "",
         tech: "",
       },
@@ -1444,7 +1482,9 @@ function ProjectDetail({
                   <span className="font-medium">
                     {selectedWorktree.spec.name}
                   </span>
-                  <span className="text-muted-foreground">Bound spec</span>
+                  <span className="text-muted-foreground">
+                    Bound spec · V{selectedWorktree.spec.versionNumber} · Draft
+                  </span>
                 </div>
               </div>
 
@@ -1525,11 +1565,17 @@ function ProjectDetail({
               <div>
                 <div className="mb-1.5 text-xs font-medium">Spec</div>
                 <input
+                  list={"spec-options-" + project.id}
                   value={specName}
                   onChange={(event) => setSpecName(event.target.value)}
                   placeholder="Agent retry policy"
                   className="h-9 w-full rounded-md border border-border px-3 text-[13px] outline-none focus:border-ring"
                 />
+                <datalist id={"spec-options-" + project.id}>
+                  {specOptions.map((o) => (
+                    <option key={o.versionId} value={o.label} />
+                  ))}
+                </datalist>
               </div>
               <div className="col-span-2">
                 <div className="mb-1.5 text-xs font-medium">
@@ -1841,10 +1887,10 @@ function BindAgentDialog({
   );
   const canBind = Boolean(
     selectedProject &&
-    selectedWorktree &&
-    routingDescription.trim() &&
-    data.agents.some((a) => a.name === agent) &&
-    !busy,
+      selectedWorktree &&
+      routingDescription.trim() &&
+      data.agents.some((a) => a.name === agent) &&
+      !busy,
   );
 
   useEffect(() => {
@@ -2635,7 +2681,7 @@ function SettingsPage() {
 }
 
 function RelayView() {
-  const { data, action, busy, connection } = useBackend();
+  const { data, action, busy, setStreamIssue } = useBackend();
   const [selectedIssueId, setSelectedIssueId] = useState(() =>
     decodeURIComponent(location.hash.replace("#issue/", "")),
   );
@@ -2677,6 +2723,10 @@ function RelayView() {
       priority: 0,
     };
   const rawIssue = data.issues.find((i) => i.id === selectedIssue.uid);
+  useEffect(() => {
+    setStreamIssue(selectedIssue.uid);
+    return () => setStreamIssue("");
+  }, [selectedIssue.uid, setStreamIssue]);
   const upload = useUpload(selectedIssue.uid);
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const projects: Project[] = data.projects.map((p) => ({
@@ -2707,7 +2757,15 @@ function RelayView() {
       .filter((w) => w.projectId === p.id)
       .map((w) => ({
         ...w,
-        spec: { name: w.specName, product: "", tech: "" },
+        spec: {
+          id: w.specId,
+          versionId: w.specVersionId,
+          name: data.specs.find((s) => s.id === w.specId)?.name || "",
+          versionNumber: data.specVersions.find((v) => v.id === w.specVersionId)
+            ?.number,
+          product: "",
+          tech: "",
+        },
       })),
   }));
   const agentBindings: Record<string, AgentBinding[]> = {};
@@ -2723,8 +2781,7 @@ function RelayView() {
       status:
         latest && ["starting", "running", "stopping"].includes(latest.status)
           ? "Running"
-          : (latest &&
-                ["unknown", "failed", "stopped"].includes(latest.status)) ||
+          : (latest && ["unknown"].includes(latest.status)) ||
               data.tasks.some(
                 (t) => t.bindingId === b.id && t.status === "waiting",
               )
@@ -2909,8 +2966,9 @@ function RelayView() {
       name: worktree.name,
       path: worktree.path,
       branch: worktree.branch,
-      specName: worktree.spec.name,
-      specDir: "docs",
+      ...(worktree.spec.id
+        ? { specId: worktree.spec.id, specVersionId: worktree.spec.versionId }
+        : { newSpec: { name: worktree.spec.name } }),
     });
   };
   const updateSpec = () => {};

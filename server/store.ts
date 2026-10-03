@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { State } from "./types.ts";
+import { EventEmitter } from "node:events";
 export const now = () => new Date().toISOString();
 export const id = () => randomUUID();
 export const hash = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -52,10 +53,13 @@ export function find<T extends { id: string }>(items: T[], value: unknown): T {
     fail(404, "NOT_FOUND", "Object not found")
   );
 }
-function initial(): State {
+export function initial(): State {
   return {
-    schemaVersion: 2,
-    sessions: [],
+    schemaVersion: 3,
+    specs: [],
+    specVersions: [],
+    evaluations: [],
+    contextSnapshots: [],
     labelCatalog: [
       { name: "Bug", color: "bg-[#f05256]" },
       { name: "Feature", color: "bg-[#bb80ff]" },
@@ -80,6 +84,7 @@ function initial(): State {
   };
 }
 export class Store {
+  changes = new EventEmitter();
   db: DatabaseSync;
   dir: string;
   constructor(dir: string) {
@@ -93,18 +98,12 @@ export class Store {
     this.db
       .prepare("INSERT OR IGNORE INTO state VALUES(1,?,0)")
       .run(JSON.stringify(initial()));
-    if (this.read().schemaVersion === 1)
-      this.change((s) => {
-        s.schemaVersion = 2;
-        s.sessions = [];
-        s.labelCatalog = initial().labelCatalog;
-        for (const i of s.issues) {
-          i.priority = 0;
-          i.labels = [];
-        }
-      });
-    if (this.read().schemaVersion !== 2)
-      throw new Error("Unsupported database schema");
+    if (this.read().schemaVersion !== 3) {
+      this.db.close();
+      throw new Error(
+        "Unsupported database schema. Stop Relay and run npm run db:reset.",
+      );
+    }
     if (process.env.TYPESAFE_API_KEY && !existsSync(join(dir, "secret.json")))
       this.saveKey(process.env.TYPESAFE_API_KEY);
   }
@@ -119,6 +118,7 @@ export class Store {
   }
   change<T>(fn: (s: State) => T, key?: string, fingerprint = ""): T {
     this.db.exec("BEGIN IMMEDIATE");
+    let committed = false;
     try {
       if (key) {
         const old = this.db
@@ -146,9 +146,11 @@ export class Store {
           .prepare("INSERT INTO operations VALUES(?,?,?,?)")
           .run(key, fingerprint, JSON.stringify(result ?? null), now());
       this.db.exec("COMMIT");
+      committed = true;
+      this.changes.emit("change", s.revision);
       return result;
     } catch (e) {
-      this.db.exec("ROLLBACK");
+      if (!committed) this.db.exec("ROLLBACK");
       throw e;
     }
   }
@@ -179,8 +181,7 @@ export class Store {
     renameSync(path + ".tmp", path);
     chmodSync(path, 0o600);
   }
-  redact(value: string): string {
-    const secret = this.key();
+  redact(value: string, secret = this.key()): string {
     return (secret ? value.split(secret).join("[REDACTED]") : value)
       .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
       .replace(
@@ -190,12 +191,51 @@ export class Store {
   }
   publicState() {
     const s = this.read();
-    return {
-      ...s,
+    const {
+      contextSnapshots,
+      evaluations,
+      specs,
+      specVersions,
+      ...publicData
+    } = s;
+    return this.redacted({
+      ...publicData,
+      specs: specs.map(({ draft, ...spec }) => ({
+        ...spec,
+        draft: { revision: draft.revision, baseVersionId: draft.baseVersionId },
+      })),
+      specVersions: specVersions.map(
+        ({ product, tech, ...version }) => version,
+      ),
+      evaluations: evaluations.map(
+        ({ input, answer, ...evaluation }) => evaluation,
+      ),
       settings: { ...s.settings, configured: !!this.key() },
       attachments: s.attachments.map(({ content, ...a }) => a),
-      runs: s.runs.map(({ context, ...r }) => r),
-    };
+      runs: s.runs.map(({ contextRef, ...r }) => r),
+    });
+  }
+  redacted<T>(value: T): T {
+    const secret = this.key();
+    const walk = (x: any): any =>
+      typeof x === "string"
+        ? this.redact(x, secret)
+        : Array.isArray(x)
+          ? x.map(walk)
+          : x && typeof x === "object"
+            ? Object.fromEntries(
+                Object.entries(x).map(([key, v]) => [
+                  key,
+                  typeof v === "string" &&
+                  /^(authorization|api[_-]?key|token|password|secret)$/i.test(
+                    key,
+                  )
+                    ? "[REDACTED]"
+                    : walk(v),
+                ]),
+              )
+            : x;
+    return walk(value);
   }
   close() {
     this.db.close();

@@ -6,9 +6,10 @@ try {
   const response = await fetch(url + "/api/state");
   if (!response.ok) throw new Error("Relay API unavailable");
   const state = await response.json();
+  const sessions = state.issues.flatMap((i) => i.sessions);
   if (!bindingId) {
     console.log(
-      state.sessions
+      sessions
         .map(
           (s) =>
             `${s.bindingId}\t${s.agentId}\t${s.threadId || s.sessionFile || "not started"}`,
@@ -19,8 +20,9 @@ try {
   }
   const binding = state.bindings.find((b) => b.id === bindingId && !b.removed);
   const worktree = state.worktrees.find((w) => w.id === binding?.worktreeId);
-  const session = state.sessions.find(
+  const session = sessions.find(
     (s) =>
+      s.id === binding?.activeSessionId &&
       s.bindingId === bindingId &&
       s.agentId === binding?.agentId &&
       s.path === worktree?.path,
@@ -37,7 +39,7 @@ try {
   } else {
     if (
       session.busyTurnId ||
-      session.status === "running" ||
+      session.status === "busy" ||
       session.status === "unknown"
     )
       throw new Error(

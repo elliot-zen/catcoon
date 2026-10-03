@@ -1,247 +1,403 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupActivity, stepContent } from "../src/activity.ts";
-import type { Event, Run, Request } from "../server/types.ts";
-
-type Data = Parameters<typeof groupActivity>[0];
-const at = "2026-10-03T12:00:00.000Z";
-const record = (
-  id: string,
-  type: string,
-  extra: Partial<Event> = {},
-): Event => ({
-  id,
-  issueId: "issue",
-  source: "Codex",
-  type,
-  text: id,
-  at,
-  receivedAt: at,
-  ...extra,
+import { fixture } from "./helpers.ts";
+import { groupActivity } from "../src/activity.ts";
+import { artifact, makeRequest } from "../server/domain.ts";
+import { find, id } from "../server/store.ts";
+import { createApp } from "../server/index.ts";
+test("One native run has one collapsed activity; requests retain separate entries", () => {
+  const f = fixture();
+  try {
+    f.start();
+    const r = f.runtime.begin(f.state().tasks[0].id, f.binding.id, "spec")!;
+    f.runtime.started(r.id, r.sessionId, "turn");
+    for (let n = 0; n < 50; n++)
+      f.runtime.streams.codex(find(f.state().runs, r.id), {
+        method: "item/agentMessage/delta",
+        params: { itemId: "answer", delta: "word " },
+      });
+    f.store.change((s) => {
+      const a = artifact(s, {
+        issueId: f.issue.id,
+        runId: r.id,
+        title: "Spec draft",
+        content: "Readable",
+      });
+      makeRequest(s, {
+        issueId: f.issue.id,
+        runId: r.id,
+        kind: "approval",
+        title: "Review",
+        artifactIds: [a.id],
+        action: { type: "review", description: "Review" },
+        scope: "issue",
+      });
+    });
+    f.runtime.complete(r.id, true, "Completed answer.", "");
+    const entries = groupActivity(f.state(), f.issue.id);
+    assert.equal(entries.filter((e) => e.kind === "run").length, 1);
+    assert.equal(entries.filter((e) => e.kind === "request").length, 1);
+    assert.equal(f.runtime.streams.items(r.id).length, 1);
+    assert.equal(f.runtime.streams.items(r.id)[0].content, "word ".repeat(50));
+  } finally {
+    f.close();
+  }
 });
-const run = (id: string, extra: Partial<Run> = {}): Run => ({
-  id,
-  issueId: "issue",
-  taskId: "task",
-  bindingId: "binding",
-  snapshot: {
-    id: "binding",
-    issueId: "issue",
-    projectId: "project",
-    worktreeId: "tree",
-    agentId: "codex",
-    description: "Original instructions",
-    revision: 0,
-    removed: false,
-    path: "/original",
-    branch: "main",
-    projectName: "Original project",
-    agentName: "Codex",
-    command: "codex",
-  },
-  context: "",
-  status: "running",
-  startedAt: at,
-  ...extra,
+test("Codex Read, Exec, public thinking and answer stream in order; final snapshots replace deltas", () => {
+  const f = fixture();
+  try {
+    f.start();
+    const run = f.runtime.begin(f.state().tasks[0].id, f.binding.id, "spec")!;
+    f.runtime.started(run.id, run.sessionId, "turn");
+    const r = find(f.state().runs, run.id);
+    const stream = (method: string, params: any) =>
+      f.runtime.streams.codex(r, { method, params });
+    stream("item/reasoning/textDelta", {
+      itemId: "private",
+      delta: "private reasoning never shared",
+    });
+    assert.equal(f.runtime.streams.items(r.id).length, 0);
+    stream("item/started", {
+      item: {
+        id: "read",
+        type: "commandExecution",
+        command: "cat README.md",
+        commandActions: [{ type: "read", path: "README.md" }],
+      },
+    });
+    stream("item/completed", {
+      item: {
+        id: "read",
+        type: "commandExecution",
+        command: "cat README.md",
+        commandActions: [{ type: "read", path: "README.md" }],
+        aggregatedOutput: "file",
+        exitCode: 0,
+      },
+    });
+    stream("item/started", {
+      item: { id: "exec", type: "commandExecution", command: "node --test" },
+    });
+    stream("item/commandExecution/outputDelta", {
+      itemId: "exec",
+      delta: "pass",
+    });
+    stream("item/completed", {
+      item: {
+        id: "exec",
+        type: "commandExecution",
+        command: "node --test",
+        aggregatedOutput: "failed test",
+        exitCode: 1,
+      },
+    });
+    stream("item/reasoning/summaryTextDelta", {
+      itemId: "think",
+      summaryIndex: 0,
+      delta: "Public summary",
+    });
+    stream("item/agentMessage/delta", { itemId: "answer", delta: "Partial" });
+    stream("item/completed", {
+      item: { id: "answer", type: "agentMessage", text: "Full answer" },
+    });
+    stream("item/completed", {
+      item: { id: "answer", type: "agentMessage", text: "Full answer" },
+    });
+    const items = f.runtime.streams.items(r.id);
+    assert.deepEqual(
+      items.map((i) => i.kind),
+      ["tool", "tool", "thinking", "answer"],
+    );
+    assert.equal(items[0].metadata.title, "Read README.md");
+    assert.equal(items[1].metadata.title, "Exec node --test");
+    assert.equal(items[1].status, "failed");
+    assert.equal(items[3].content, "Full answer");
+    const replay = f.runtime.streams.replay(f.issue.id, 0);
+    assert.equal(
+      replay.filter((e) => e.operation === "replace" && e.kind === "answer")
+        .length,
+      1,
+    );
+    const snapshot = f.runtime.streams.snapshot(f.issue.id);
+    assert.equal(
+      f.runtime.streams.replay(f.issue.id, snapshot.lastSeq).length,
+      0,
+    );
+  } finally {
+    f.close();
+  }
 });
-const data = (): Data => ({
-  runs: [],
-  events: [],
-  requests: [],
-  artifacts: [],
-  tasks: [],
+test("Pi assistant messages and nested tool calls keep unique ordered identities", () => {
+  const f = fixture();
+  try {
+    f.start();
+    const r = f.runtime.begin(f.state().tasks[0].id, f.binding.id, "spec")!;
+    f.runtime.started(r.id, r.sessionId, "pi-turn");
+    const send = (m: any) =>
+      f.runtime.streams.pi(find(f.state().runs, r.id), m);
+    send({ type: "message_start" });
+    send({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "thinking_delta",
+        contentIndex: 0,
+        delta: "Plan",
+      },
+    });
+    send({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 1,
+        delta: "Hello",
+      },
+    });
+    send({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Plan complete" },
+          { type: "text", text: "Hello world" },
+        ],
+      },
+    });
+    send({
+      type: "tool_execution_start",
+      toolCallId: "nested",
+      toolName: "read",
+      args: { path: "README.md" },
+      parentToolCallId: "parent",
+    });
+    send({
+      type: "tool_execution_end",
+      isError: true,
+      toolCallId: "nested",
+      toolName: "read",
+      result: { content: [{ type: "text", text: "file" }] },
+      parentToolCallId: "parent",
+    });
+    send({ type: "message_start" });
+    send({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Second answer" }],
+      },
+    });
+    const items = f.runtime.streams.items(r.id);
+    assert.equal(items.length, 4);
+    assert.equal(items[1].content, "Hello world");
+    assert.equal(items[2].metadata.parentToolCallId, "parent");
+    assert.equal(items[2].status, "failed");
+    assert.equal(items[3].content, "Second answer");
+  } finally {
+    f.close();
+  }
 });
-
-test("one execution contains its replies, calls, artifacts and generated work; approval remains independently actionable", () => {
-  const s = data();
-  s.runs.push(run("run-1"));
-  s.requests.push({
-    id: "request",
-    issueId: "issue",
-    status: "Approved",
-  } as Request);
-  s.artifacts.push({
-    id: "artifact",
-    issueId: "issue",
-    runId: "run-1",
-  } as Data["artifacts"][number]);
-  s.tasks.push({
-    id: "next",
-    issueId: "issue",
-    sourceId: "run-1",
-  } as Data["tasks"][number]);
-  s.events = [
-    record("human", "issue.start", { source: "Human" }),
-    record("scheduled", "run.scheduled", { source: "Triage", runId: "run-1" }),
-    record("reply-1", "step", { runId: "run-1" }),
-    record("tool", "step", { runId: "run-1" }),
-    record("created", "request.created", {
-      runId: "run-1",
-      requestId: "request",
-    }),
-    record("reply-2", "step", { runId: "run-1" }),
-    record("artifact", "artifact.published", {
-      data: { artifactId: "artifact" },
-    }),
-    record("next-work", "task.created", { taskId: "next" }),
-    record("completed", "run.completed", { runId: "run-1" }),
-    record("approved", "request.approve", {
-      source: "Human",
-      requestId: "request",
-    }),
-    record("handoff", "handoff", { runId: "run-1" }),
-    record("foreign", "step", { issueId: "another", runId: "run-1" }),
-  ];
-  const before = structuredClone(s);
-  const rows = groupActivity(s, "issue");
-  assert.deepEqual(
-    rows.map((r) => r.id),
-    ["event:human", "run:run-1", "request:request"],
-  );
-  const execution = rows[1];
-  assert.equal(execution.kind, "run");
-  if (execution.kind !== "run") return;
-  assert.equal(execution.run.snapshot.path, "/original");
-  assert.deepEqual(
-    execution.events.map((e) => e.id),
-    [
-      "scheduled",
-      "reply-1",
+test("Stream limits are explicit, credentials redacted, token events do not mutate business revision", () => {
+  const f = fixture();
+  try {
+    const r = (() => {
+      f.start();
+      return f.runtime.begin(f.state().tasks[0].id, f.binding.id, "spec")!;
+    })();
+    const rev = f.state().revision;
+    f.store.saveKey("private-key");
+    f.runtime.streams.write(
+      r,
+      "out",
       "tool",
-      "reply-2",
-      "artifact",
-      "next-work",
-      "completed",
-      "handoff",
-    ],
-  );
-  const request = rows[2];
-  assert.equal(request.kind, "request");
-  if (request.kind !== "request") return;
-  assert.equal(request.request.status, "Approved");
-  assert.deepEqual(
-    request.events.map((e) => e.id),
-    ["created", "approved"],
-  );
-  assert.deepEqual(s, before); // Grouping never rewrites persisted history or decisions.
+      "replace",
+      "private-key " + "X".repeat(70000),
+      { title: "Exec" },
+    );
+    assert.equal(f.state().revision, rev);
+    const item = f.runtime.streams.items(r.id)[0];
+    assert.equal(item.metadata.truncated, true);
+    assert.ok(!item.content.includes("private-key"));
+    assert.match(item.content, /Truncated/);
+  } finally {
+    f.close();
+  }
 });
-
-test("same Codex/task across retries and bindings stays separate, and late/polled output keeps stable group keys and positions", () => {
-  const s = data();
-  s.runs = [
-    run("first", { status: "failed" }),
-    run("retry"),
-    run("different-binding", { bindingId: "other" }),
-  ];
-  s.events = [
-    record("first-start", "run.started", { runId: "first" }),
-    record("retry-start", "run.started", { runId: "retry" }),
-    record("other-start", "run.started", { runId: "different-binding" }),
-    record("orphan", "step", { runId: "deleted-run" }),
-    record("legacy", "step"),
-  ];
-  const keys = groupActivity(s, "issue").map((r) => r.id);
-  s.events.push(
-    record("late", "run.late", {
-      runId: "first",
-      at: "2026-10-03T11:00:00.000Z",
-    }),
-    record("new-reply", "step", { runId: "retry" }),
-  );
-  s.runs[1].status = "completed";
-  const updated = groupActivity(s, "issue");
-  assert.deepEqual(
-    updated.map((r) => r.id),
-    keys,
-  );
-  assert.equal(updated.filter((r) => r.kind === "run").length, 3);
-  const first = updated[0],
-    retry = updated[1];
-  assert.ok(first.kind === "run" && retry.kind === "run");
-  assert.deepEqual(
-    first.events.map((e) => e.id),
-    ["first-start", "late"],
-  );
-  assert.deepEqual(
-    retry.events.map((e) => e.id),
-    ["retry-start", "new-reply"],
-  );
-  assert.equal(retry.run.status, "completed");
-});
-
-test("native terminal grouping requires both session and turn IDs and preserves old unassociated records", () => {
-  const s = data();
-  const native = (sessionId: string, nativeTurnId: string) => ({
-    sessionId,
-    nativeTurnId,
-  });
-  s.events = [
-    record("start", "session.running", { data: native("one", "turn-1") }),
-    record("response", "step", { data: native("one", "turn-1") }),
-    record("next-turn", "session.running", { data: native("one", "turn-2") }),
-    record("other-session", "session.running", {
-      data: native("two", "turn-1"),
-    }),
-    record("complete", "session.completed", { data: native("one", "turn-1") }),
-    record("old", "step", {
-      bindingId: "binding",
-      data: { nativeTurnId: "turn-1" },
-    }),
-  ];
-  const rows = groupActivity(s, "issue");
-  assert.equal(rows.filter((r) => r.kind === "terminal").length, 3);
-  assert.ok(rows[0].kind === "terminal");
-  assert.deepEqual(
-    rows[0].events.map((e) => e.id),
-    ["start", "response", "complete"],
-  );
-  assert.equal(rows.at(-1)?.kind, "event");
-});
-
-test("public replies render as text while tool failures, malformed/truncated outputs and Pi errors remain inspectable", () => {
-  const step = (value: unknown) =>
-    record("step", "step", { data: { output: JSON.stringify(value) } });
-  assert.deepEqual(
-    stepContent(step({ type: "agentMessage", text: "Readable Codex reply" })),
-    { answer: "Readable Codex reply" },
-  );
-  assert.deepEqual(
-    stepContent(
-      step({
-        type: "message_end",
-        message: {
-          role: "assistant",
-          content: [
-            { type: "thinking", thinking: "PRIVATE" },
-            { type: "text", text: "Pi reply" },
-          ],
-        },
+test("HTTP Spec CAS, same-origin enforcement, narrow tool authorization and SSE reconnect replay", async () => {
+  const f = fixture(),
+    app = createApp(f.store.dir, { worker: false });
+  await new Promise<void>((r) => app.server.listen(0, "127.0.0.1", r));
+  const url = "http://127.0.0.1:" + (app.server.address() as any).port;
+  const mutation = (path: string, body: any, origin?: string, key = id()) =>
+    fetch(url + path, {
+      method: path === "/api/spec" ? "PUT" : "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": key,
+        ...(origin ? { Origin: origin } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  try {
+    const saved = await mutation(
+      "/api/spec",
+      {
+        specId: f.tree.specId,
+        document: "product",
+        content: "HTTP draft",
+        draftRevision: 0,
+      },
+      url,
+    );
+    assert.equal(saved.status, 200);
+    assert.equal(
+      (
+        await mutation("/api/spec", {
+          specId: f.tree.specId,
+          document: "product",
+          content: "stale",
+          draftRevision: 0,
+        })
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await mutation(
+          "/api/actions",
+          { type: "issue.create", payload: { title: "Bad" } },
+          "https://outside.invalid",
+        )
+      ).status,
+      403,
+    );
+    assert.equal(
+      (await mutation("/api/runs/missing/report", { artifacts: [] })).status,
+      403,
+    );
+    app.domain.action("issue.control", {
+      issueId: f.issue.id,
+      command: "start",
+    });
+    const r = app.runtime.begin(
+      app.store.read().tasks[0].id,
+      f.binding.id,
+      "spec",
+    )!;
+    const before = app.runtime.streams.snapshot(f.issue.id);
+    app.runtime.streams.write(r, "answer", "answer", "append", "first");
+    const controller = new AbortController(),
+      response = await fetch(url + "/api/stream?issueId=" + f.issue.id, {
+        headers: { "Last-Event-ID": String(before.lastSeq) },
+        signal: controller.signal,
       }),
-    ),
-    { answer: "Pi reply", output: undefined },
-  );
-  const failed = step({
-    type: "message_end",
-    message: {
-      role: "assistant",
-      content: [],
-      stopReason: "error",
-      errorMessage: "Provider rejected prompt",
-    },
-  });
-  assert.match(stepContent(failed).output!, /Provider rejected prompt/);
-  const tool = step({
-    type: "commandExecution",
-    command: "npm test",
-    exitCode: 1,
-    aggregatedOutput: "actual failure",
-  });
-  assert.match(stepContent(tool).output!, /actual failure/);
-  const truncated = record("truncated", "step", {
-    data: {
-      output: '{"type":"commandExecution"\n[Truncated: event exceeds 64KB]',
-    },
-  });
-  assert.match(stepContent(truncated).output!, /Truncated/);
-  assert.deepEqual(stepContent(record("legacy", "output")), {});
+      reader = response.body!.getReader();
+    const first = await reader.read(),
+      chunk = new TextDecoder().decode(first.value);
+    assert.match(chunk, /event: stream/);
+    assert.match(chunk, /first/);
+    controller.abort();
+    const state = await (await fetch(url + "/api/state")).json();
+    assert.ok(!("sessions" in state));
+    assert.equal(state.issues[0].sessions.length, 1);
+    assert.equal(
+      (
+        await mutation("/api/actions", {
+          type: "task.create",
+          payload: { issueId: f.issue.id, text: "obsolete" },
+        })
+      ).status,
+      400,
+    );
+  } finally {
+    await app.close();
+    f.close();
+  }
+});
+
+test("Recovery backfills authoritative native items and replaces interrupted stream fragments", () => {
+  const f = fixture("codex");
+  try {
+    f.start();
+    const r = f.runtime.begin(f.state().tasks[0].id, f.binding.id, "spec")!;
+    f.runtime.started(r.id, r.sessionId, "turn");
+    f.runtime.streams.codex(find(f.state().runs, r.id), {
+      method: "item/agentMessage/delta",
+      params: { itemId: "answer", delta: "partial" },
+    });
+    f.domain.recover();
+    f.runtime.turnResult(r.id, {
+      id: "turn",
+      status: "completed",
+      items: [
+        {
+          id: "read",
+          type: "commandExecution",
+          command: "cat README.md",
+          commandActions: [{ type: "read", path: "README.md" }],
+          aggregatedOutput: "authoritative file",
+          exitCode: 0,
+        },
+        {
+          id: "answer",
+          type: "agentMessage",
+          text: "Complete recovered answer",
+        },
+      ],
+    });
+    const items = f.runtime.streams.items(r.id);
+    assert.equal(
+      items.find((x) => x.kind === "answer")!.content,
+      "Complete recovered answer",
+    );
+    assert.equal(
+      items.find((x) => x.kind === "tool")!.content,
+      "authoritative file",
+    );
+    assert.equal(find(f.state().runs, r.id).status, "completed");
+    assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 0);
+    assert.ok(
+      !f
+        .state()
+        .requests.some(
+          (q) => q.inputClass === "recovery" && q.status === "Pending",
+        ),
+    );
+    const count = f.runtime.streams.replay(f.issue.id, 0).length;
+    f.runtime.turnResult(r.id, { id: "turn", status: "completed", items: [] });
+    assert.equal(f.runtime.streams.replay(f.issue.id, 0).length, count);
+  } finally {
+    f.close();
+  }
+});
+test("Native tool metadata is redacted and oversized titles cannot bypass event bounds", () => {
+  const f = fixture();
+  try {
+    f.start();
+    const r = f.runtime.begin(f.state().tasks[0].id, f.binding.id, "spec")!;
+    f.store.saveKey("private-key");
+    f.runtime.streams.write(
+      r,
+      "call",
+      "tool",
+      "replace",
+      "\u0001".repeat(70000),
+      {
+        title: "X".repeat(70000),
+        parameters: {
+          Authorization: "Bearer private-key",
+          apiKey: "secret-value",
+        },
+      },
+    );
+    f.runtime.streams.write(r, "call", "tool", "append", "done");
+    const item = f.runtime.streams.items(r.id)[0];
+    assert.equal(item.metadata.truncated, true);
+    const replay = f.runtime.streams.replay(f.issue.id, 0);
+    assert.ok(
+      replay.every((e) => Buffer.byteLength(JSON.stringify(e)) <= 65536),
+    );
+    assert.ok(!JSON.stringify(replay).includes("private-key"));
+    assert.ok(!JSON.stringify(replay).includes("secret-value"));
+  } finally {
+    f.close();
+  }
 });

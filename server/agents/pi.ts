@@ -1,12 +1,17 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { Rpc, agentEnv } from "./rpc.ts";
 export class Pi extends Rpc {
   child: ChildProcess;
   closed = false;
-  constructor(path: string, cwd: string) {
+  constructor(
+    path: string,
+    cwd: string,
+    relayEnv: Record<string, string> = {},
+  ) {
     super((message) => {
       if (!this.child.stdin?.writable) throw new Error("Pi RPC disconnected");
       this.child.stdin.write(
@@ -18,11 +23,22 @@ export class Pi extends Rpc {
       );
     });
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    this.child = spawn("pi", ["--mode", "rpc", "--session", path], {
-      cwd,
-      env: agentEnv(),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    this.child = spawn(
+      "pi",
+      [
+        "--mode",
+        "rpc",
+        "--session",
+        path,
+        "--extension",
+        fileURLToPath(new URL("./pi-extension.ts", import.meta.url)),
+      ],
+      {
+        cwd,
+        env: { ...agentEnv(), ...relayEnv },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
     let buffer = "";
     const decoder = new StringDecoder("utf8");
     this.child.stdout?.on("data", (chunk) => {

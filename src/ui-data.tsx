@@ -3,7 +3,7 @@ import { FolderOpen } from "lucide-react";
 import { api, useRelay } from "./api";
 import type { State } from "../server/types";
 const empty: State = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   revision: 0,
   nextIssue: 1,
   issues: [],
@@ -19,7 +19,10 @@ const empty: State = {
   artifacts: [],
   comments: [],
   attachments: [],
-  sessions: [],
+  specs: [],
+  specVersions: [],
+  evaluations: [],
+  contextSnapshots: [],
   labelCatalog: [],
   settings: { configured: false, testedAt: "", connection: "not tested" },
 };
@@ -56,77 +59,71 @@ export function useSpec(
   worktreeId: string | undefined,
   document: "product" | "tech",
 ) {
-  const key = `spec-${worktreeId}-${document}`;
-  const [entry, setEntry] = useState<{
-    key: string;
-    content: string;
-    version: string;
-    status: string;
-    path: string;
-  }>({ key: "", content: "", version: "", status: "Loading…", path: "" });
+  const { data } = useBackend();
+  const w = data.worktrees.find((w) => w.id === worktreeId);
+  const specId = w?.specId,
+    key = "spec-" + specId + "-" + document;
+  const [entry, setEntry] = useState({
+    key: "",
+    content: "",
+    revision: 0,
+    status: "Loading…",
+  });
   const current = useRef(entry);
   current.current = entry;
   useEffect(() => {
-    if (!worktreeId) return;
+    if (!specId) return;
     let alive = true;
-    const load = async () => {
-      try {
-        const r = await api(
-          `/api/spec?worktreeId=${worktreeId}&document=${document}`,
-        );
+    void api("/api/spec?specId=" + specId + "&document=" + document)
+      .then((r) => {
         if (!alive) return;
-        const draft = sessionStorage.getItem(key);
-        const base = sessionStorage.getItem(key + "-base") || r.version;
-        const changed = draft !== null && draft !== r.content;
+        const draft = sessionStorage.getItem(key),
+          base = sessionStorage.getItem(key + "-base"),
+          changed = draft !== null && draft !== r.content;
         setEntry({
           key,
           content: draft ?? r.content,
-          version: changed ? base : r.version,
-          path: r.path,
+          revision: changed && base !== null ? Number(base) : r.draftRevision,
           status: changed
-            ? base !== r.version
-              ? "Save failed / Conflict: external content changed; draft retained"
+            ? base !== null && Number(base) !== r.draftRevision
+              ? "Save failed / Conflict: shared draft changed; input retained"
               : "Unsaved"
-            : "Saved locally",
+            : "Saved",
         });
-      } catch (e) {
+      })
+      .catch((e) => {
         if (alive)
           setEntry({
             key,
             content: sessionStorage.getItem(key) || "",
-            version: "",
-            path: "",
+            revision: 0,
             status: String(e),
           });
-      }
-    };
-    void load();
+      });
     return () => {
       alive = false;
     };
   }, [key]);
   useEffect(() => {
-    if (entry.key !== key || entry.status !== "Unsaved" || !entry.version)
-      return;
+    if (entry.key !== key || entry.status !== "Unsaved" || !specId) return;
     const timer = setTimeout(async () => {
       const saved = entry;
-      setEntry((s) => ({ ...s, status: "Saving…" }));
+      setEntry((x) => ({ ...x, status: "Saving…" }));
       try {
         const r = await api("/api/spec", "PUT", {
-          worktreeId,
+          specId,
           document,
           content: saved.content,
-          version: saved.version,
+          draftRevision: saved.revision,
         });
-        setEntry((s) =>
-          s.key === key
+        setEntry((x) =>
+          x.key === key
             ? {
-                ...s,
-                version: r.version,
-                status:
-                  s.content === saved.content ? "Saved locally" : "Unsaved",
+                ...x,
+                revision: r.draftRevision,
+                status: x.content === saved.content ? "Saved" : "Unsaved",
               }
-            : s,
+            : x,
         );
         if (
           current.current.key === key &&
@@ -135,28 +132,28 @@ export function useSpec(
           sessionStorage.removeItem(key);
           sessionStorage.removeItem(key + "-base");
         } else if (current.current.key === key)
-          sessionStorage.setItem(key + "-base", r.version);
+          sessionStorage.setItem(key + "-base", String(r.draftRevision));
       } catch (e) {
-        setEntry((s) =>
-          s.key === key
-            ? { ...s, status: "Save failed / Conflict: " + String(e) }
-            : s,
+        setEntry((x) =>
+          x.key === key
+            ? { ...x, status: "Save failed / Conflict: " + String(e) }
+            : x,
         );
       }
     }, 600);
     return () => clearTimeout(timer);
-  }, [entry, key]);
+  }, [entry, key, specId, document]);
   return {
     content: entry.key === key ? entry.content : "",
     status: entry.key === key ? entry.status : "Loading…",
-    path: entry.path,
+    path: "System Spec " + specId,
     setContent: (content: string) => {
       sessionStorage.setItem(key, content);
-      sessionStorage.setItem(key + "-base", entry.version);
-      setEntry((s) => ({
-        ...s,
+      sessionStorage.setItem(key + "-base", String(entry.revision));
+      setEntry((x) => ({
+        ...x,
         content,
-        status: s.status.startsWith("Save failed") ? s.status : "Unsaved",
+        status: x.status.startsWith("Save failed") ? x.status : "Unsaved",
       }));
     },
   };

@@ -7,13 +7,6 @@ type ActivityData = Pick<
 export type ActivityEntry =
   | { kind: "run"; id: string; run: Run; events: Event[] }
   | { kind: "request"; id: string; request: Request; events: Event[] }
-  | {
-      kind: "terminal";
-      id: string;
-      sessionId: string;
-      turnId: string;
-      events: Event[];
-    }
   | { kind: "event"; id: string; event: Event };
 
 export function groupActivity(
@@ -36,9 +29,7 @@ export function groupActivity(
   const groups = new Map<string, Exclude<ActivityEntry, { kind: "event" }>>();
   for (const e of data.events) {
     if (e.issueId !== issueId) continue;
-    const details = e.data as
-      | { artifactId?: string; sessionId?: string; nativeTurnId?: string }
-      | undefined;
+    const details = e.data as { artifactId?: string } | undefined;
     const request = requests.get(e.requestId || "");
     const run =
       runs.get(e.runId || "") ||
@@ -56,19 +47,6 @@ export function groupActivity(
       };
     } else if (run) {
       group = { kind: "run", id: "run:" + run.id, run, events: [] };
-    } else if (
-      typeof details?.sessionId === "string" &&
-      typeof details?.nativeTurnId === "string"
-    ) {
-      group = {
-        kind: "terminal",
-        id:
-          "terminal:" +
-          JSON.stringify([details.sessionId, details.nativeTurnId]),
-        sessionId: details.sessionId,
-        turnId: details.nativeTurnId,
-        events: [],
-      };
     }
     if (!group) {
       entries.push({ kind: "event", id: "event:" + e.id, event: e });
@@ -83,34 +61,4 @@ export function groupActivity(
     }
   }
   return entries;
-}
-
-// Present public assistant text without losing malformed, failed or truncated tool records.
-export function stepContent(e: Event): { answer?: string; output?: string } {
-  const data = e.data as { output?: unknown } | undefined;
-  if (e.type !== "step" || typeof data?.output !== "string") return {};
-  try {
-    const item = JSON.parse(data.output);
-    if (item.type === "agentMessage" && typeof item.text === "string")
-      return { answer: item.text };
-    if (
-      item.message?.role === "assistant" &&
-      Array.isArray(item.message.content)
-    ) {
-      const answer = item.message.content
-        .filter((b: any) => b.type === "text" && typeof b.text === "string")
-        .map((b: any) => b.text)
-        .join("\n");
-      return {
-        answer,
-        output:
-          item.message.errorMessage || item.message.stopReason === "error"
-            ? data.output
-            : undefined,
-      };
-    }
-  } catch {
-    /* Truncated or legacy outputs remain visible verbatim. */
-  }
-  return { output: data.output };
 }

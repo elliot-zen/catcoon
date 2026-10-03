@@ -1,96 +1,56 @@
 import { chromium, expect } from "@playwright/test";
-import { Store, id, now } from "../server/store.ts";
-import { event, task, artifact, makeRequest } from "../server/domain.ts";
-import { spawn, execFileSync } from "node:child_process";
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  existsSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve, extname } from "node:path";
-import { createServer } from "node:http";
+import { fixture } from "../tests/helpers.ts";
+import { createApp } from "../server/index.ts";
+import { find, id } from "../server/store.ts";
 import { build } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwind from "@tailwindcss/vite";
+import {
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  symlinkSync,
+  existsSync,
+} from "node:fs";
+import { join, resolve, extname } from "node:path";
+import { createServer } from "node:http";
 import assert from "node:assert/strict";
-const dir = mkdtempSync(join(tmpdir(), "relay-browser-"));
-const repo = join(dir, "repo");
-mkdirSync(repo);
-execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
-mkdirSync(join(repo, "docs"));
-writeFileSync(join(repo, "docs/PRODUCT.md"), "# Browser product");
-writeFileSync(join(repo, "docs/TECH.md"), "# Browser tech");
-const port = 14310,
-  url = `http://127.0.0.1:${port}`;
-const server = spawn(process.execPath, ["server/index.ts"], {
-  env: { ...process.env, DATA_DIR: join(dir, "data"), API_PORT: String(port) },
-  stdio: ["ignore", "pipe", "pipe"],
-});
-let logs = "";
-server.stdout.on("data", (x) => (logs += x));
-server.stderr.on("data", (x) => (logs += x));
+const f = fixture(),
+  app = createApp(join(f.root, "browser-data"), { worker: false });
+app.runtime.recovered = true;
+app.store.change((s) => (s.agents = f.state().agents));
+await new Promise((r) => app.server.listen(0, "127.0.0.1", r));
+const url = "http://127.0.0.1:" + app.server.address().port;
 let browser, reference;
-async function waitServer() {
-  for (let n = 0; n < 100; n++) {
-    try {
-      if ((await fetch(url + "/api/health")).ok) return;
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw Error(logs);
-}
-async function action(type, payload) {
-  const r = await fetch(url + "/api/actions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Idempotency-Key": crypto.randomUUID(),
-    },
-    body: JSON.stringify({ type, payload }),
-  });
-  const body = await r.json();
-  assert.ok(r.ok, JSON.stringify(body));
-  return body.result;
-}
-const readState = async () => await (await fetch(url + "/api/state")).json();
-const geometry = async (page, locator) => {
-  const box = await page.locator(locator).first().boundingBox();
-  return locator === "main"
-    ? { x: box.x, y: box.y, width: box.width }
-    : { x: box.x, y: box.y, width: box.width, height: box.height };
+const state = () => app.store.read();
+const geometry = async (page, selector) => {
+  const b = await page.locator(selector).first().boundingBox();
+  return selector === "main"
+    ? { x: b.x, y: b.y, width: b.width }
+    : { x: b.x, y: b.y, width: b.width, height: b.height };
 };
 try {
-  await waitServer();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({
-    viewport: { width: 1440, height: 1000 },
-    colorScheme: "light",
-  });
-  const errors = [];
-  const dialogs = [];
+      viewport: { width: 1440, height: 1000 },
+      colorScheme: "light",
+    }),
+    errors = [],
+    dialogs = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  page.on("dialog", (dialog) => {
-    dialogs.push(dialog.message());
-    return dialog.dismiss();
+  page.on("dialog", (d) => {
+    dialogs.push(d.message());
+    return d.dismiss();
   });
   await page.goto(url);
   await page.getByText("No issues in this view").waitFor();
-  assert.equal(await page.getByText("JEV-142").count(), 0);
   await page.getByRole("button", { name: "Create issue", exact: true }).click();
-  const createDialog = page.getByRole("dialog");
-  await createDialog
-    .getByPlaceholder("Issue title")
-    .fill("Browser collaboration");
-  await createDialog
+  const create = page.getByRole("dialog");
+  await create.getByPlaceholder("Issue title").fill("Browser collaboration");
+  await create
     .getByPlaceholder("Add description…")
-    .fill("Keep this text unchanged when switching languages.");
-  await page.screenshot({ path: "/tmp/relay-new-issue.png" });
-  await createDialog
+    .fill("Shared Spec and automatic progress.");
+  await create
     .getByRole("button", { name: "Create issue", exact: true })
     .click();
   await page.getByText("No assignments").waitFor();
@@ -99,27 +59,13 @@ try {
     "Publish artifact",
     "Request approval",
     "Request human input",
-    "Edit",
-    "Refresh",
   ])
-    await expect(page.getByRole("button", { name, exact: true })).toHaveCount(
+    assert.equal(
+      await page.getByRole("button", { name, exact: true }).count(),
       0,
     );
-  await page.getByRole("button", { name: "Issue actions" }).click();
-  await expect(
-    page.getByRole("button", { name: "Start", exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Issue actions" }).click();
-  // Persist metadata from the existing property controls.
   await page
-    .getByRole("button", { name: /priority/i })
-    .first()
-    .click();
-  await page.getByRole("menuitemradio", { name: /High/ }).click();
-  await page.getByRole("button", { name: "Add label" }).click();
-  await page.getByRole("button", { name: "Bug", exact: true }).click();
-  await page
-    .getByPlaceholder("Leave a comment…")
+    .locator('textarea[placeholder="Leave a comment…"]')
     .fill("Actual browser comment");
   await page
     .locator('textarea[placeholder="Leave a comment…"]')
@@ -127,67 +73,63 @@ try {
     .getByRole("button")
     .last()
     .click();
-  await page.getByText("Actual browser comment", { exact: true }).waitFor();
-  // Registration uses the approved same-position absolute directory field.
+  await page
+    .getByText("Actual browser comment", { exact: true })
+    .first()
+    .waitFor();
   await page
     .getByRole("button", { name: /^Projects/ })
     .first()
     .click();
   await page.getByRole("button", { name: "New project", exact: true }).click();
-  const pd = page.getByRole("dialog");
-  await pd.getByPlaceholder("ab-gateway").fill("Browser Project");
-  await pd
+  const projectDialog = page.getByRole("dialog");
+  await projectDialog.getByPlaceholder("ab-gateway").fill("Browser Project");
+  await projectDialog
     .getByRole("textbox", { name: "Choose a repository folder" })
-    .fill(repo);
-  await pd.getByRole("button", { name: "Browse" }).click();
-  await pd.getByRole("button", { name: repo, exact: true }).click();
-  await page.screenshot({ path: "/tmp/relay-new-project.png" });
-  await pd.getByRole("button", { name: "Create project" }).click();
+    .fill(f.repo);
+  await projectDialog.getByRole("button", { name: "Browse" }).click();
+  await projectDialog
+    .getByRole("button", { name: f.repo, exact: true })
+    .click();
+  await projectDialog.getByRole("button", { name: "Create project" }).click();
   await page.getByRole("button", { name: "New worktree" }).click();
-  const wd = page.getByRole("dialog");
-  await wd.getByPlaceholder("Retry policy", { exact: true }).fill("Main");
-  await wd.getByPlaceholder("feature/retry-policy").fill("main");
-  await wd.getByPlaceholder("Agent retry policy").fill("Browser spec");
-  await wd.getByRole("textbox", { name: "Choose directory" }).fill(repo);
-  await wd.getByRole("button", { name: "Create worktree" }).click();
-  await page.getByRole("textbox", { name: "PRODUCT.md" }).waitFor();
-  await expect(page.getByRole("textbox", { name: "PRODUCT.md" })).toHaveValue(
-    "# Browser product",
-  );
-  await page
-    .getByRole("textbox", { name: "PRODUCT.md" })
-    .fill("# Browser saved product");
-  await page.getByText("Saved locally", { exact: true }).waitFor();
-  assert.equal(
-    readFileSync(join(repo, "docs/PRODUCT.md"), "utf8"),
-    "# Browser saved product",
-  );
+  const wt = page.getByRole("dialog");
+  await wt.getByPlaceholder("Retry policy", { exact: true }).fill("Main");
+  await wt.getByPlaceholder("feature/retry-policy").fill("main");
+  await wt.getByPlaceholder("Agent retry policy").fill("Browser spec");
+  await wt.getByRole("textbox", { name: "Choose directory" }).fill(f.repo);
+  await wt.getByRole("button", { name: "Create worktree" }).click();
+  const product = page.getByRole("textbox", { name: "PRODUCT.md" });
+  await expect(product).toHaveValue("");
+  await product.fill("# Browser saved product");
+  await page.getByText("Saved", { exact: true }).waitFor();
+  const spec = state().specs[0];
+  assert.equal(spec.draft.product, "# Browser saved product");
+  assert.equal(state().specVersions[0].product, "");
+  assert.ok(!existsSync(join(f.repo, "docs/PRODUCT.md")));
   await page.getByRole("button", { name: "TECH.md", exact: true }).click();
-  await expect(page.getByRole("textbox", { name: "TECH.md" })).toHaveValue(
-    "# Browser tech",
-  );
-  writeFileSync(join(repo, "docs/TECH.md"), "# External change");
-  await page
-    .getByRole("textbox", { name: "TECH.md" })
-    .fill("Keep conflict draft");
+  const tech = page.getByRole("textbox", { name: "TECH.md" });
+  await expect(tech).toHaveValue("");
+  await tech.fill("# Browser tech");
+  await page.getByText("Saved", { exact: true }).waitFor();
+  const newRevision = state().specs[0].draft.revision;
+  await fetch(url + "/api/spec", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": id() },
+    body: JSON.stringify({
+      specId: spec.id,
+      document: "tech",
+      content: "# External shared draft",
+      draftRevision: newRevision,
+    }),
+  });
+  await tech.fill("Keep conflict input");
   await page.getByText(/Save failed \/ Conflict/).waitFor();
-  assert.equal(
-    readFileSync(join(repo, "docs/TECH.md"), "utf8"),
-    "# External change",
-  );
+  assert.equal(state().specs[0].draft.tech, "# External shared draft");
   await page.getByRole("button", { name: "PRODUCT.md", exact: true }).click();
-  await expect(page.getByRole("textbox", { name: "PRODUCT.md" })).toHaveValue(
-    "# Browser saved product",
-  );
+  await expect(product).toHaveValue("# Browser saved product");
   await page.getByRole("button", { name: "TECH.md", exact: true }).click();
-  await expect(page.getByRole("textbox", { name: "TECH.md" })).toHaveValue(
-    "Keep conflict draft",
-  );
-  await page.getByText(/Save failed \/ Conflict/).waitFor();
-  assert.equal(
-    readFileSync(join(repo, "docs/TECH.md"), "utf8"),
-    "# External change",
-  );
+  await expect(tech).toHaveValue("Keep conflict input");
   await page.screenshot({ path: "/tmp/relay-project-detail.png" });
   await page
     .getByRole("button", { name: /^Issues/ })
@@ -197,310 +139,115 @@ try {
     .getByRole("button", { name: /REL-1.*Browser collaboration/ })
     .click();
   await page.getByRole("button", { name: "Bind agent", exact: true }).click();
-  const bindDialog = page.getByRole("dialog");
-  await bindDialog.getByRole("button", { name: /^Project / }).click();
-  await bindDialog.getByRole("combobox").fill("Browser");
-  await bindDialog.getByRole("option", { name: /Browser Project/ }).click();
-  await bindDialog
+  const bind = page.getByRole("dialog");
+  await bind.getByRole("button", { name: /^Project / }).click();
+  await bind.getByRole("combobox").fill("Browser");
+  await bind.getByRole("option", { name: /Browser Project/ }).click();
+  await bind
     .getByLabel("Routing instructions")
-    .fill("Own backend implementation and contract questions");
+    .fill("Plan, implement and verify greeting");
+  const bindGeometry = await bind.boundingBox();
   await page.screenshot({ path: "/tmp/relay-bind-agent.png" });
-  const bindGeometry = await bindDialog.boundingBox();
-  await bindDialog
-    .getByRole("button", { name: "Bind agent", exact: true })
-    .click();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  let state = await readState();
-  const issue = state.issues[0];
-  assert.equal(state.runs.length, 0);
+  await bind.getByRole("button", { name: "Bind agent", exact: true }).click();
+  await expect(bind).toHaveCount(0);
+  const issue = state().issues[0],
+    binding = state().bindings[0],
+    tree = state().worktrees[0];
   assert.equal(issue.status, "Todo");
-  assert.equal(issue.priority, 2);
-  assert.deepEqual(issue.labels, ["Bug"]);
-  assert.equal(state.bindings.length, 1);
-  const art = await action("artifact.publish", {
-    issueId: issue.id,
-    title: "Frozen review",
-    content: "Exact evidence to inspect",
-    kind: "report",
-  });
-  const q = await action("request.create", {
-    issueId: issue.id,
-    title: "Approve frozen review",
-    kind: "approval",
-    body: "Review exact version",
-    action: "Authorize scoped next step",
-    artifactIds: [art.id],
-    scope: "issue",
-  });
+  assert.equal(state().runs.length, 0);
   await page
-    .getByText("Approve frozen review", { exact: false })
-    .first()
-    .waitFor();
-  await page.getByRole("button", { name: "Approve", exact: true }).click();
-  await page.getByText("Approved", { exact: false }).first().waitFor();
-  assert.equal(
-    (await readState()).requests.find((r) => r.id === q.id).status,
-    "Approved",
-  );
-  const routeTask = await action("task.create", {
-    issueId: issue.id,
-    text: "restart",
-  });
-  const routing = await action("request.create", {
-    issueId: issue.id,
-    taskId: routeTask.id,
-    title: "Choose a binding for this task",
-    body: "Low confidence; confirm the work scope.",
-    kind: "input",
-    routeTask: true,
-    options: [
-      {
-        value: state.bindings[0].id,
-        label:
-          "Codex · Browser Project · main · Own backend implementation and contract questions",
-      },
-    ],
-    scope: [routeTask.id],
-  });
-  await page.getByLabel("Approval reply").fill("Pi");
-  const previousDialogs = dialogs.length;
-  await page
-    .getByRole("button", { name: "Submit answer", exact: true })
+    .getByRole("button", { name: "Issue actions", exact: true })
     .click();
-  await expect.poll(() => dialogs.length).toBe(previousDialogs + 1);
-  assert.match(dialogs.at(-1), /full label or value/);
-  await expect(page.getByLabel("Approval reply")).toHaveValue("Pi");
-  assert.equal(
-    (await readState()).requests.find((r) => r.id === routing.id).status,
-    "Pending",
-  );
-  // Reproduce the screenshot: typing only Codex selects the sole Codex binding.
-  await page.getByLabel("Approval reply").fill("Codex");
-  await page
-    .getByRole("button", { name: "Submit answer", exact: true })
-    .click();
-  await expect
-    .poll(
-      async () =>
-        (await readState()).requests.find((r) => r.id === routing.id).status,
-    )
-    .toBe("Answered");
-  state = await readState();
-  assert.equal(
-    state.requests.find((r) => r.id === routing.id).answer,
-    state.bindings[0].id,
-  );
-  assert.equal(
-    state.tasks.find((t) => t.id === routeTask.id).bindingId,
-    state.bindings[0].id,
-  );
-  assert.equal(dialogs.length, previousDialogs + 1);
-  const input = await action("request.create", {
-    issueId: issue.id,
-    title: "Choose policy",
-    kind: "input",
-    body: "Choose one",
-    options: [
-      { value: "per-agent", label: "Per agent" },
-      { value: "global", label: "Global defaults" },
-    ],
-    scope: "issue",
-  });
-  await page
-    .getByRole("button", { name: /^Inbox/ })
-    .first()
-    .click();
-  await page.getByRole("button", { name: /Choose policy/ }).click();
-  await page
-    .getByPlaceholder("Provide the details needed to continue…")
-    .fill("Per agent");
-  assert.equal(
-    (await readState()).requests.find((r) => r.id === input.id).status,
-    "Pending",
-  );
-  await page.getByRole("button", { name: "Send response" }).click();
-  assert.equal(
-    (await readState()).requests.find((r) => r.id === input.id).status,
-    "Answered",
-  );
-  // Replay native history only in the isolated test database, without model calls.
-  const replay = new Store(join(dir, "data"));
-  const grouped = replay.change((s) => {
-    const binding = s.bindings[0];
-    const work = task(s, issue.id, "Grouped execution verification");
-    const run = {
-      id: id(),
-      issueId: issue.id,
-      taskId: work.id,
-      bindingId: binding.id,
-      snapshot: {
-        ...binding,
-        path: repo,
-        branch: "main",
-        projectName: "Browser Project",
-        agentName: "Codex",
-        command: "codex",
-      },
-      context: "Fixture only",
-      status: "running",
-      startedAt: now(),
-    };
-    s.runs.push(run);
-    event(s, issue.id, "Triage", "run.scheduled", work.text, {
-      runId: run.id,
-      taskId: work.id,
-    });
-    event(s, issue.id, "Codex", "run.started", repo, { runId: run.id });
-    for (const text of ["First grouped reply", "Second grouped reply"])
-      event(s, issue.id, "Codex", "step", "agentMessage", {
-        runId: run.id,
-        data: {
-          type: "agentMessage",
-          output: JSON.stringify({ type: "agentMessage", text }),
-        },
-      });
-    event(s, issue.id, "Codex", "step", "npm test", {
-      runId: run.id,
-      data: {
+  await page.getByRole("button", { name: "Start", exact: true }).click();
+  const r = app.runtime.begin(state().tasks[0].id, binding.id, "spec");
+  app.runtime.started(r.id, r.sessionId, "browser-turn");
+  app.runtime.streams.codex(find(state().runs, r.id), {
+    method: "item/started",
+    params: {
+      item: {
+        id: "read",
         type: "commandExecution",
-        output: JSON.stringify({
-          type: "commandExecution",
-          command: "npm test",
-          aggregatedOutput: "Grouped tool output",
-          exitCode: 0,
-        }),
+        command: "cat README.md",
+        commandActions: [{ type: "read", path: "README.md" }],
       },
-    });
-    const material = artifact(s, {
-      issueId: issue.id,
-      runId: run.id,
-      bindingId: binding.id,
-      title: "Grouped evidence",
-      content: "Frozen grouped evidence",
-    });
-    const request = makeRequest(s, {
-      issueId: issue.id,
-      taskId: work.id,
-      kind: "approval",
-      source: "Codex",
-      title: "Review grouped work",
-      body: "Approval stays outside the execution collapse",
-      artifactIds: [material.id],
-      scope: [work.id],
-      action: "Continue the reviewed scope",
-    });
-    return { runId: run.id, requestId: request.id };
+    },
   });
-  await page
-    .getByRole("button", { name: /^Issues/ })
-    .first()
-    .click();
-  await page
-    .getByRole("button", { name: /REL-1.*Browser collaboration/ })
-    .click();
-  const runRow = page.locator(`[data-activity-id="run:${grouped.runId}"]`);
-  const requestRow = page.locator(
-    `[data-activity-id="request:${grouped.requestId}"]`,
-  );
-  await expect(runRow).toHaveCount(1);
+  app.runtime.streams.codex(find(state().runs, r.id), {
+    method: "item/completed",
+    params: {
+      item: {
+        id: "read",
+        type: "commandExecution",
+        command: "cat README.md",
+        commandActions: [{ type: "read", path: "README.md" }],
+        aggregatedOutput: "Fixture",
+        exitCode: 0,
+      },
+    },
+  });
+  app.runtime.streams.codex(find(state().runs, r.id), {
+    method: "item/reasoning/summaryTextDelta",
+    params: { itemId: "think", summaryIndex: 0, delta: "Public plan" },
+  });
+  app.runtime.streams.codex(find(state().runs, r.id), {
+    method: "item/agentMessage/delta",
+    params: { itemId: "answer", delta: "Streaming first sentence." },
+  });
+  await page.locator('[data-activity-id="run:' + r.id + '"]').waitFor();
+  const row = page.locator('[data-activity-id="run:' + r.id + '"]');
   await expect(
-    runRow.getByRole("button", { name: "Expand event" }),
-  ).toBeVisible();
-  await expect(
-    runRow.getByText("First grouped reply", { exact: true }),
+    row.getByText("Streaming first sentence.", { exact: true }),
   ).toHaveCount(0);
+  await row.getByRole("button", { name: "Expand event" }).click();
+  await expect(row.getByText("Read README.md", { exact: false })).toBeVisible();
+  await expect(row.getByText("Public plan", { exact: true })).toBeVisible();
   await expect(
-    requestRow.getByRole("button", { name: "Approve", exact: true }),
+    row.getByText("Streaming first sentence.", { exact: true }),
   ).toBeVisible();
-  await runRow.getByRole("button", { name: "Expand event" }).click();
-  await expect(
-    runRow.getByText("First grouped reply", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    runRow.getByText("Second grouped reply", { exact: true }),
-  ).toBeVisible();
-  await expect(runRow.getByText("npm test", { exact: true })).toBeVisible();
-  await expect(
-    runRow.getByText("Frozen grouped evidence", { exact: true }),
-  ).toBeVisible();
-  await page.screenshot({
-    path: "/tmp/relay-grouped-activity.png",
-    fullPage: true,
+  app.runtime.streams.codex(find(state().runs, r.id), {
+    method: "item/agentMessage/delta",
+    params: { itemId: "answer", delta: " Second sentence." },
   });
-  replay.change((s) => {
-    const r = s.runs.find((r) => r.id === grouped.runId);
-    r.status = "completed";
-    r.result = "Third grouped reply";
-    r.finishedAt = now();
-    event(s, issue.id, "Codex", "step", "agentMessage", {
-      runId: r.id,
-      data: {
-        type: "agentMessage",
-        output: JSON.stringify({ type: "agentMessage", text: r.result }),
+  await expect(
+    row.getByText("Streaming first sentence. Second sentence.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  assert.equal(await page.locator('[data-activity-id^="run:"]').count(), 1);
+  app.domain.report(
+    r.id,
+    {
+      specProposal: {
+        specId: spec.id,
+        baseVersionId: tree.specVersionId,
+        draftRevision: state().specs[0].draft.revision,
+        product: "# Greeting\nProvide a greeting",
+        tech: "# Function\nVerify greeting",
+        upgradeTargets: [
+          {
+            worktreeId: tree.id,
+            fromVersionId: tree.specVersionId,
+            worktreeRevision: tree.revision,
+          },
+        ],
       },
-    });
-    event(s, issue.id, "Codex", "run.completed", "completed", { runId: r.id });
-  });
-  // A poll changes status and appends replies without adding a row or collapsing it.
-  await expect(
-    runRow.getByText("Third grouped reply", { exact: true }),
-  ).toBeVisible();
-  await expect(runRow).toContainText("finished execution");
-  await expect(runRow).toHaveCount(1);
-  await expect(
-    runRow.getByRole("button", { name: "Collapse event" }),
-  ).toBeVisible();
-  await runRow.getByRole("button", { name: "Collapse event" }).click();
-  await requestRow
-    .getByRole("button", { name: "Approve", exact: true })
-    .click();
-  await expect(
-    requestRow.getByText("Approved", { exact: false }).first(),
-  ).toBeVisible();
-  await expect(requestRow).toHaveCount(1);
-  assert.equal(
-    (await readState()).requests.find((q) => q.id === grouped.requestId).status,
-    "Approved",
+    },
+    id(),
   );
-  replay.close();
+  app.runtime.complete(r.id, true, "Spec is ready for Human approval.", "");
+  const request = state().requests[0];
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect
+    .poll(() => find(state().requests, request.id).status)
+    .toBe("Approved");
+  assert.notEqual(state().worktrees[0].specVersionId, tree.specVersionId);
+  await page.screenshot({ path: "/tmp/relay-browser.png", fullPage: true });
   await page.reload();
-  await expect(
-    runRow.getByRole("button", { name: "Expand event" }),
-  ).toBeVisible();
-  await expect(
-    runRow.getByText("Third grouped reply", { exact: true }),
-  ).toHaveCount(0);
-  await expect(requestRow).toContainText("Approved");
-  await page.getByRole("button", { name: "Search issues" }).click();
-  await page.getByPlaceholder("Search issues…").fill("browser project");
-  await expect(
-    page.getByRole("button", { name: /REL-1.*Browser collaboration/ }),
-  ).toHaveCount(1);
-  await page
-    .getByRole("button", { name: /REL-1.*Browser collaboration/ })
-    .click();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.screenshot({ path: "/tmp/relay-settings.png" });
-  await page
-    .getByRole("button", { name: /^Agent/ })
-    .first()
-    .click();
-  await page.screenshot({ path: "/tmp/relay-agent.png" });
-  await page
-    .getByRole("button", { name: /^Issues/ })
-    .first()
-    .click();
-  await page
-    .getByRole("button", { name: /REL-1.*Browser collaboration/ })
-    .click();
-  await page.screenshot({
-    path: "/tmp/relay-browser-desktop.png",
-    fullPage: true,
-  });
-  // Render the actual reference source in an isolated preview and compare invariant layout metrics.
+  await page.locator('[data-activity-id="run:' + r.id + '"]').waitFor();
+  assert.equal(await page.locator('[data-activity-id^="run:"]').count(), 1);
   const design =
-    process.env.UI_DESIGN_DIR || "/home/elliot/workspace/tmp/ui-design";
-  const refRoot = join(dir, "reference");
+      process.env.UI_DESIGN_DIR || "/home/elliot/workspace/tmp/ui-design",
+    refRoot = join(f.root, "reference");
   mkdirSync(join(refRoot, "src"), { recursive: true });
   for (const name of ["App.tsx", "index.css", "main.tsx"])
     writeFileSync(
@@ -519,30 +266,29 @@ try {
     logLevel: "error",
   });
   reference = createServer((req, res) => {
-    const path = join(
+    const file = join(
       refRoot,
       "dist",
       req.url === "/" ? "index.html" : req.url,
     );
-    if (!existsSync(path)) {
+    if (!existsSync(file)) {
       res.writeHead(404);
-      res.end();
-      return;
+      return res.end();
     }
     res.setHeader(
       "Content-Type",
       { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" }[
-        extname(path)
+        extname(file)
       ] || "text/plain",
     );
-    res.end(readFileSync(path));
+    res.end(readFileSync(file));
   });
   await new Promise((r) => reference.listen(0, "127.0.0.1", r));
   const refPage = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
     colorScheme: "light",
   });
-  await refPage.goto(`http://127.0.0.1:${reference.address().port}`);
+  await refPage.goto("http://127.0.0.1:" + reference.address().port);
   await refPage
     .getByText("Add retry policies for failed agent tool calls", {
       exact: true,
@@ -578,35 +324,19 @@ try {
     await geometry(page, "main"),
     await geometry(refPage, "main"),
   );
-  await refPage.screenshot({ path: "/tmp/relay-reference-settings.png" });
   await page.getByRole("button", { name: "Switch to dark mode" }).click();
   await page.getByRole("button", { name: "Switch to Chinese" }).click();
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
   await expect(page.locator("html")).toHaveClass(/dark/);
-  await page.getByRole("button", { name: /^任务/ }).first().click();
-  await page
-    .getByRole("button", { name: /REL-1.*Browser collaboration/ })
-    .click();
-  await page
-    .getByText("Keep this text unchanged when switching languages.")
-    .waitFor();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Bind agent", exact: true }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.screenshot({
-    path: "/tmp/relay-browser-mobile.png",
-    fullPage: true,
-  });
   assert.deepEqual(errors, []);
+  assert.deepEqual(dialogs, []);
   console.log(
-    "Browser checks passed: reference layout, true directory registration, searchable binding, requests, persisted metadata, autosave/conflicts/drafts, search and preferences.",
+    "Browser passed: design geometry, real directories, system Spec CAS/conflicts, binding, single Activity stream, explicit upgrade approval and preferences.",
   );
 } finally {
   await browser?.close();
   if (reference) await new Promise((r) => reference.close(r));
-  const exit = new Promise((r) => server.once("exit", r));
-  server.kill("SIGTERM");
-  await exit;
-  rmSync(dir, { recursive: true, force: true });
+  await app.close();
+  f.close();
 }

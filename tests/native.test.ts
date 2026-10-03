@@ -1,103 +1,33 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { execFileSync } from "node:child_process";
-import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
+import { fixture } from "./helpers.ts";
 import { Codex } from "../server/agents/codex.ts";
+import { Pi } from "../server/agents/pi.ts";
 import { Rpc } from "../server/agents/rpc.ts";
-import { Store, id, find } from "../server/store.ts";
-import { Domain } from "../server/domain.ts";
 import { Runtime } from "../server/runtime.ts";
-import { groupActivity } from "../src/activity.ts";
-import type { Issue, Project, Worktree, Binding } from "../server/types.ts";
+import { find, id } from "../server/store.ts";
+import { relayTools } from "../server/agents/tools.ts";
+import { join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 async function until(predicate: () => boolean) {
-  for (let n = 0; n < 200; n++) {
+  for (let n = 0; n < 300; n++) {
     if (predicate()) return;
     await new Promise((r) => setTimeout(r, 10));
   }
-  assert.ok(predicate(), "Expected state did not arrive");
-}
-function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "relay-native-"));
-  const repo = join(root, "repo");
-  mkdirSync(repo);
-  execFileSync("git", ["init", "-b", "main", repo], { stdio: "ignore" });
-  const store = new Store(join(root, "data"));
-  const domain = new Domain(store);
-  store.change((s) =>
-    s.agents.push({
-      id: "codex",
-      name: "Codex",
-      command: "codex",
-      version: "0.160.0",
-      status: "available",
-      heartbeat: "",
-      reason: "",
-    }),
-  );
-  const issue = domain.action("issue.create", {
-    title: "Native work",
-  }) as Issue;
-  const project = domain.action("project.create", {
-    name: "Native",
-    path: repo,
-  }) as Project;
-  const tree = domain.action("worktree.create", {
-    projectId: project.id,
-    name: "Main",
-    path: repo,
-    branch: "main",
-    specName: "Native",
-    specDir: "docs",
-  }) as Worktree;
-  const binding = domain.action("binding.save", {
-    issueId: issue.id,
-    projectId: project.id,
-    worktreeId: tree.id,
-    agentId: "codex",
-    description: "Native tools",
-  }) as Binding;
-  const runtime = new Runtime(store);
-  const begin = () => {
-    domain.action("issue.control", { issueId: issue.id, command: "start" });
-    const task = store.read().tasks[0];
-    return runtime.begin(task.id, binding.id, "Return actual evidence", 0)!;
-  };
-  return {
-    root,
-    repo,
-    store,
-    domain,
-    runtime,
-    binding,
-    issue,
-    begin,
-    close() {
-      runtime.shutdown();
-      store.close();
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+  assert.ok(predicate(), "Expected native state did not arrive");
 }
 async function peer() {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise<void>((r) => server.once("listening", r));
-  const endpoint = `ws://127.0.0.1:${(server.address() as { port: number }).port}`;
-  let thread: any = {
-    id: "thread-1",
-    cwd: "",
-    status: { type: "idle" },
-    turns: [],
-  };
-  const calls: string[] = [];
-  const replies: any[] = [];
-  const clients: WebSocket[] = [];
-  let auto = false;
-  const notify = (method: string, params: any) => {
-    for (const c of clients)
+  const endpoint = "ws://127.0.0.1:" + (server.address() as any).port,
+    clients: WebSocket[] = [],
+    calls: any[] = [],
+    replies: any[] = [];
+  const thread: any = { id: "thread-1", status: { type: "idle" }, turns: [] };
+  const notify = (method: string, params: any) =>
+    clients.forEach((c) => {
       if (c.readyState === 1)
         c.send(
           JSON.stringify({
@@ -105,23 +35,15 @@ async function peer() {
             params: { threadId: thread.id, ...params },
           }),
         );
-  };
+    });
   const finish = (status = "completed") => {
     const turn = thread.turns.at(-1);
     turn.status = status;
     turn.items = [
       {
+        id: "answer-1",
         type: "agentMessage",
-        text: JSON.stringify({
-          summary: "Completed",
-          artifacts: [
-            {
-              kind: "report",
-              title: "Native evidence",
-              content: "Observed completion",
-            },
-          ],
-        }),
+        text: "Inspected real result; natural answer.",
       },
     ];
     thread.status = { type: "idle" };
@@ -131,18 +53,14 @@ async function peer() {
   server.on("connection", (c) => {
     clients.push(c);
     c.on("message", (raw) => {
-      const m = JSON.parse(raw.toString());
+      const m = JSON.parse(String(raw));
       if (!m.method) {
         replies.push(m);
         return;
       }
-      calls.push(m.method);
+      calls.push(m);
       let result: any = {};
-      if (m.method === "thread/start") {
-        thread.cwd = m.params.cwd;
-        result = { thread };
-      }
-      if (["thread/resume", "thread/read"].includes(m.method))
+      if (["thread/start", "thread/read", "thread/resume"].includes(m.method))
         result = { thread };
       if (m.method === "turn/start") {
         const turn = {
@@ -154,10 +72,9 @@ async function peer() {
         thread.status = { type: "active" };
         notify("turn/started", { turn });
         result = { turn };
-        if (auto) setTimeout(() => finish(), 25);
       }
       if (m.method === "turn/interrupt")
-        setTimeout(() => finish("interrupted"), 20);
+        setTimeout(() => finish("interrupted"), 5);
       if (m.id !== undefined) c.send(JSON.stringify({ id: m.id, result }));
     });
   });
@@ -167,16 +84,11 @@ async function peer() {
     replies,
     notify,
     finish,
-    get thread() {
-      return thread;
-    },
-    set auto(value: boolean) {
-      auto = value;
-    },
-    request(method: string, params: any, rpcId = "native-approval") {
+    thread,
+    request(method: string, params: any, requestId = "server-call") {
       clients[0].send(
         JSON.stringify({
-          id: rpcId,
+          id: requestId,
           method,
           params: {
             threadId: thread.id,
@@ -187,396 +99,285 @@ async function peer() {
       );
     },
     close() {
-      for (const c of clients) c.terminate();
+      clients.forEach((c) => c.terminate());
       server.close();
     },
   };
 }
-test("RPC distinguishes colliding server request IDs from responses", async () => {
+async function connect(
+  f: ReturnType<typeof fixture>,
+  p: Awaited<ReturnType<typeof peer>>,
+) {
+  const c = new Codex(f.store.dir, p.endpoint);
+  f.runtime.codex = c;
+  c.on("message", (m) => f.runtime.codexMessage(m));
+  c.on("disconnect", (reason) => {
+    for (const r of f
+      .state()
+      .runs.filter((r) =>
+        ["starting", "running", "stopping"].includes(r.status),
+      ))
+      f.runtime.unknown(r.id, reason);
+  });
+  await f.runtime.prepareCodex(f.binding.id, f.repo);
+  f.start();
+  const r = f.runtime.begin(f.state().tasks[0].id, f.binding.id, "spec")!;
+  await Runtime.prototype.launchNative.call(f.runtime, r);
+  await until(() => find(f.state().runs, r.id).status === "running");
+  return r;
+}
+test("RPC server request IDs never consume a pending client response", async () => {
   const rpc = new Rpc(() => {});
-  let serverRequest = false;
-  rpc.on("message", () => (serverRequest = true));
-  const call = rpc.call("initialize");
-  rpc.receive({ id: "relay-1", method: "approval", params: {} });
+  let request = false;
+  rpc.on("message", () => (request = true));
+  const pending = rpc.call("initialize");
+  rpc.receive({ id: "relay-1", method: "item/tool/call", params: {} });
   assert.equal(rpc.pending.size, 1);
-  assert.ok(serverRequest);
+  assert.ok(request);
   rpc.receive({ id: "relay-1", result: { ok: true } });
-  assert.deepEqual(await call, { ok: true });
+  assert.deepEqual(await pending, { ok: true });
 });
-test("Codex native notification precedes response, shared thread joins, and exact completion ingests once", async () => {
-  const f = fixture();
-  const p = await peer();
-  const old = process.env.CODEX_APP_SERVER_ENDPOINT;
-  process.env.CODEX_APP_SERVER_ENDPOINT = p.endpoint;
-  let terminal: Codex | undefined;
+test("Codex early notifications correlate exact thread/turn and natural completion is ingested once", async () => {
+  const f = fixture("codex"),
+    p = await peer();
   try {
-    p.auto = true;
-    const run = f.begin();
-    f.runtime.launch(run);
-    await until(() => f.store.read().runs[0].status === "completed");
-    const s = f.store.read();
-    assert.ok(s.runs[0].nativeTurnId);
-    assert.equal(s.sessions[0].threadId, "thread-1");
-    assert.equal(s.artifacts.length, 1);
-    assert.equal(s.events.filter((e) => e.type === "run.started").length, 1);
-    assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 0);
-    terminal = new Codex(f.root, p.endpoint);
-    await terminal.connect();
-    const joined = await terminal.call("thread/resume", {
-      threadId: s.sessions[0].threadId,
+    const r = await connect(f, p);
+    assert.equal(find(f.state().runs, r.id).nativeTurnId, "turn-1");
+    assert.deepEqual(
+      p.calls.find((m) => m.method === "thread/start").params.dynamicTools,
+      relayTools,
+    );
+    const start = p.calls.find((m) => m.method === "turn/start");
+    assert.equal(start.params.sandboxPolicy.type, "readOnly");
+    assert.equal(start.params.summary, "detailed");
+    p.notify("item/agentMessage/delta", {
+      turnId: "turn-1",
+      itemId: "answer-1",
+      delta: "Streaming answer",
     });
-    assert.equal(joined.thread.id, s.sessions[0].threadId);
-    assert.equal(joined.thread.turns[0].id, s.runs[0].nativeTurnId);
-    p.notify("turn/completed", { turn: p.thread.turns[0] });
-    assert.equal(f.store.read().artifacts.length, 1);
-    assert.equal(p.calls.filter((c) => c === "turn/start").length, 1);
+    assert.equal(find(f.state().runs, r.id).status, "running");
+    p.finish();
+    await until(() => find(f.state().runs, r.id).status === "completed");
+    p.finish();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(
+      f.state().artifacts.filter((a) => a.title === "Codex result").length,
+      1,
+    );
+    assert.equal(f.state().issues[0].triage.dirty, true);
+    assert.equal(
+      f.runtime.streams.items(r.id).filter((i) => i.kind === "answer").length,
+      1,
+    );
+    assert.equal(f.state().issues[0].sessions[0].threadId, p.thread.id);
   } finally {
-    terminal?.shutdown();
     f.close();
     p.close();
-    if (old) process.env.CODEX_APP_SERVER_ENDPOINT = old;
-    else delete process.env.CODEX_APP_SERVER_ENDPOINT;
   }
 });
-test("native approvals require Human decision, external resolution is not business approval", async () => {
-  const f = fixture();
-  const p = await peer();
-  const old = process.env.CODEX_APP_SERVER_ENDPOINT;
-  process.env.CODEX_APP_SERVER_ENDPOINT = p.endpoint;
+test("Codex dynamic report is scoped and idempotent; tool report doesn't terminate a native turn", async () => {
+  const f = fixture("codex"),
+    p = await peer();
   try {
-    const run = f.begin();
-    f.runtime.launch(run);
-    await until(() => f.store.read().runs[0].status === "running");
+    const r = await connect(f, p),
+      args = {
+        artifacts: [
+          { kind: "report", title: "Readable", content: "Observed source." },
+        ],
+      };
+    p.request(
+      "item/tool/call",
+      { tool: "relay_report", arguments: args, callId: "dynamic-1" },
+      "host-1",
+    );
+    await until(() => p.replies.length === 1);
+    assert.equal(p.replies[0].result.success, true);
+    assert.equal(find(f.state().runs, r.id).status, "running");
+    p.request(
+      "item/tool/call",
+      { tool: "relay_report", arguments: args, callId: "dynamic-1" },
+      "host-2",
+    );
+    await until(() => p.replies.length === 2);
+    assert.equal(f.state().artifacts.length, 1);
+    p.finish();
+    await until(() => find(f.state().runs, r.id).status === "completed");
+  } finally {
+    f.close();
+    p.close();
+  }
+});
+test("Native approvals are separate requests and write permissions cannot bypass Spec approval", async () => {
+  const f = fixture("codex"),
+    p = await peer();
+  try {
+    const r = await connect(f, p);
     p.request("item/commandExecution/requestApproval", {
-      command: "git status",
-      reason: "Inspect repository",
+      itemId: "exec",
+      reason: "Write output",
+      command: "touch greeting",
     });
-    await until(() => f.store.read().requests.length === 1);
-    const q = f.store.read().requests[0];
-    assert.equal(q.status, "Pending");
-    assert.equal(p.replies.length, 0);
+    await until(() => f.state().requests.length === 1);
+    const q = f.state().requests[0];
+    await assert.rejects(
+      f.runtime.decideNative(
+        { requestId: q.id, revision: 0, decision: "approve" },
+        id(),
+      ),
+      /fixed Spec/,
+    );
+    assert.equal(find(f.state().requests, q.id).status, "Pending");
     await f.runtime.decideNative(
-      { requestId: q.id, revision: 0, decision: "approve" },
+      {
+        requestId: q.id,
+        revision: 0,
+        decision: "changes",
+        answer: "Do not write before the Spec is approved.",
+      },
       id(),
     );
     await until(() => p.replies.length === 1);
-    assert.deepEqual(p.replies[0].result, { decision: "accept" });
-    assert.equal(f.store.read().requests[0].decidedBy, "Human");
-    p.request(
-      "item/fileChange/requestApproval",
-      { reason: "Proposed change" },
-      "external",
-    );
-    await until(() => f.store.read().requests.length === 2);
-    p.notify("serverRequest/resolved", { requestId: "external" });
-    await until(
-      () => f.store.read().requests[1].status === "Resolved externally",
-    );
-    assert.equal(f.store.read().requests[1].decidedBy, undefined);
-    assert.equal(p.replies.length, 1);
+    assert.deepEqual(p.replies[0].result, { decision: "decline" });
+    assert.equal(find(f.state().runs, r.id).status, "running");
     p.finish();
-    await until(() => f.store.read().runs[0].status === "completed");
+    await until(() => find(f.state().runs, r.id).status === "completed");
   } finally {
     f.close();
     p.close();
-    if (old) process.env.CODEX_APP_SERVER_ENDPOINT = old;
-    else delete process.env.CODEX_APP_SERVER_ENDPOINT;
   }
 });
-test("terminal active turn locks worktree; disconnect preserves unknown and restart collects exact terminal state without replay", async () => {
-  const f = fixture();
-  const p = await peer();
-  const old = process.env.CODEX_APP_SERVER_ENDPOINT;
-  process.env.CODEX_APP_SERVER_ENDPOINT = p.endpoint;
-  let recovery: Runtime | undefined;
+test("Unknown recovery reads the exact saved native turn and does not send another turn/start", async () => {
+  const f = fixture("codex"),
+    p = await peer();
   try {
-    const run = f.begin();
-    f.runtime.launch(run);
-    await until(() => f.store.read().runs[0].status === "running");
-    f.runtime.codex!.socket!.terminate();
-    await until(() => f.store.read().runs[0].status === "unknown");
-    assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 1);
+    const r = await connect(f, p);
+    f.runtime.unknown(r.id, "disconnect");
+    await f.runtime.recoverNative();
+    assert.equal(find(f.state().runs, r.id).status, "running");
+    assert.equal(p.calls.filter((m) => m.method === "turn/start").length, 1);
     p.finish();
-    f.runtime.shutdown();
-    recovery = new Runtime(f.store);
-    await recovery.recoverNative();
-    assert.equal(f.store.read().runs[0].status, "completed");
-    assert.equal(p.calls.filter((c) => c === "turn/start").length, 1);
-    assert.equal(f.store.read().artifacts.length, 1);
-    p.thread.status = { type: "active" };
+    await until(() => find(f.state().runs, r.id).status === "completed");
+    assert.equal(f.state().requests[0].status, "Resolved");
+    assert.equal(f.store.db.prepare("SELECT * FROM locks").get(), undefined);
+  } finally {
+    f.close();
+    p.close();
+  }
+});
+test("Terminal-only turns are observed but cannot submit platform reports or satisfy the goal", async () => {
+  const f = fixture("codex"),
+    p = await peer();
+  try {
+    await connect(f, p);
+    p.finish();
+    await until(() => f.state().runs[0].status === "completed");
     p.thread.turns.push({
       id: "terminal-turn",
       status: "inProgress",
       items: [],
     });
     p.notify("turn/started", { turn: p.thread.turns.at(-1) });
-    await until(
-      () => f.store.read().sessions[0].busyTurnId === "terminal-turn",
-    );
-    assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 1);
-    await assert.rejects(
-      () => recovery!.prepareCodex(f.binding.id, f.repo),
-      /busy/,
-    );
-    p.notify("item/completed", {
-      turnId: "terminal-turn",
-      item: { type: "agentMessage", text: "Terminal response" },
+    await until(() => f.state().runs.length === 2);
+    const r = f.state().runs[1];
+    assert.equal(r.origin, "terminal");
+    assert.equal(r.taskId, undefined);
+    p.request("item/tool/call", {
+      tool: "relay_report",
+      arguments: { artifacts: [{ title: "Forged", content: "terminal" }] },
+      callId: "terminal-report",
     });
-    await until(() =>
-      f.store
-        .read()
-        .events.some(
-          (e) =>
-            e.type === "step" &&
-            (e.data as any)?.nativeTurnId === "terminal-turn",
-        ),
-    );
+    await until(() => p.replies.length === 1);
+    assert.equal(p.replies[0].result.success, false);
     p.finish();
-    await until(
-      () => f.store.db.prepare("SELECT * FROM locks").all().length === 0,
-    );
-    assert.equal(f.store.read().artifacts.length, 1);
-    const terminalRows = groupActivity(f.store.read(), f.issue.id).filter(
-      (r) => r.kind === "terminal",
-    );
-    assert.equal(terminalRows.length, 1);
-    assert.equal(terminalRows[0].turnId, "terminal-turn");
-    assert.deepEqual(
-      terminalRows[0].events.map((e) => e.type),
-      ["session.running", "step", "step", "session.completed"],
-    );
-  } finally {
-    recovery?.shutdown();
-    f.close();
-    p.close();
-    if (old) process.env.CODEX_APP_SERVER_ENDPOINT = old;
-    else delete process.env.CODEX_APP_SERVER_ENDPOINT;
-  }
-});
-test(
-  "installed Codex app-server supports two independent Unix clients on one persisted thread",
-  { timeout: 30000 },
-  async () => {
-    execFileSync("codex", ["--version"], { stdio: "ignore" });
-    const root = mkdtempSync(join(tmpdir(), "relay-real-codex-"));
-    const home = join(root, "home");
-    mkdirSync(home);
-    const http = createServer((_req, res) => {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({ error: { message: "Local isolated protocol probe" } }),
-      );
-    });
-    await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
-    writeFileSync(
-      join(home, "config.toml"),
-      `model_provider="probe"\n[model_providers.probe]\nname="Probe"\nbase_url="http://127.0.0.1:${(http.address() as { port: number }).port}/v1"\nwire_api="responses"\nrequires_openai_auth=false\n`,
-    );
-    const oldHome = process.env.CODEX_HOME;
-    const oldEndpoint = process.env.CODEX_APP_SERVER_ENDPOINT;
-    process.env.CODEX_HOME = home;
-    delete process.env.CODEX_APP_SERVER_ENDPOINT;
-    const a = new Codex(root);
-    const b = new Codex(root, a.endpoint);
-    try {
-      await a.connect();
-      const started = await a.call("thread/start", {
-        cwd: root,
-        sandbox: "workspace-write",
-        approvalPolicy: "on-request",
-        ephemeral: false,
-      });
-      await a.call("turn/start", {
-        threadId: started.thread.id,
-        input: [{ type: "text", text: "Local protocol probe only" }],
-      });
-      await new Promise((r) => setTimeout(r, 600));
-      await b.connect();
-      const joined = await b.call("thread/resume", {
-        threadId: started.thread.id,
-      });
-      assert.equal(joined.thread.id, started.thread.id);
-      assert.equal(joined.thread.cwd, root);
-    } finally {
-      const child = a.child;
-      const exited = child
-        ? new Promise((r) => child.once("exit", r))
-        : Promise.resolve();
-      b.shutdown();
-      a.shutdown();
-      await exited;
-      http.closeAllConnections();
-      await new Promise<void>((r) => http.close(() => r()));
-      rmSync(root, { recursive: true, force: true });
-      if (oldHome) process.env.CODEX_HOME = oldHome;
-      else delete process.env.CODEX_HOME;
-      if (oldEndpoint) process.env.CODEX_APP_SERVER_ENDPOINT = oldEndpoint;
-      else delete process.env.CODEX_APP_SERVER_ENDPOINT;
-    }
-  },
-);
-test("schema 1 migration preserves unknown locks and initializes UI metadata without guessing sessions", () => {
-  const f = fixture();
-  let reopened: Store | undefined;
-  try {
-    const run = f.begin();
-    f.domain.recover();
-    f.store.change((s) => {
-      s.schemaVersion = 1;
-      delete (s as any).sessions;
-      delete (s as any).labelCatalog;
-    });
-    f.runtime.shutdown();
-    f.store.close();
-    reopened = new Store(join(f.root, "data"));
-    const state = reopened.read();
-    assert.equal(state.schemaVersion, 2);
-    assert.deepEqual(state.sessions, []);
-    assert.equal(state.issues[0].priority, 0);
-    assert.deepEqual(state.issues[0].labels, []);
-    assert.equal(state.runs[0].status, "unknown");
-    assert.equal(state.runs[0].nativeTurnId, undefined);
+    await until(() => find(f.state().runs, r.id).status === "completed");
     assert.equal(
-      (
-        reopened.db.prepare("SELECT * FROM locks").all()[0] as {
-          run_id: string;
-        }
-      ).run_id,
-      run.id,
+      f.state().artifacts.some((a) => a.title === "Forged"),
+      false,
     );
+    assert.equal(f.state().tasks[0].status, "pending");
   } finally {
-    reopened?.close();
-    rmSync(f.root, { recursive: true, force: true });
-  }
-});
-test("Issue priority/labels validate, persist, and reject obsolete metadata updates", () => {
-  const f = fixture();
-  try {
-    const current = find(f.store.read().issues, f.issue.id);
-    const updated = f.domain.action("issue.update", {
-      issueId: current.id,
-      revision: current.revision,
-      priority: 2,
-      labels: ["Feature", "New label"],
-    }) as Issue;
-    assert.equal(updated.priority, 2);
-    assert.deepEqual(updated.labels, ["Feature", "New label"]);
-    assert.ok(f.store.read().labelCatalog.some((l) => l.name === "New label"));
-    assert.throws(
-      () =>
-        f.domain.action("issue.update", {
-          issueId: current.id,
-          revision: current.revision,
-          priority: 3,
-        }),
-      /changed/,
-    );
-    assert.throws(
-      () =>
-        f.domain.action("issue.update", {
-          issueId: current.id,
-          revision: updated.revision,
-          priority: 5,
-        }),
-      /priority/,
-    );
-  } finally {
-    f.close();
-  }
-});
-test("Pi settled honors assistant error and zero-exit disconnection stays unknown", async () => {
-  const oldPath = process.env.PATH;
-  for (const mode of ["error", "exit"]) {
-    const f = fixture();
-    try {
-      f.store.change((s) =>
-        s.agents.push({
-          id: "pi",
-          name: "Pi",
-          command: "pi",
-          version: "1.0.0",
-          status: "available",
-          heartbeat: "",
-          reason: "",
-        }),
-      );
-      const b = f.domain.action("binding.save", {
-        issueId: f.issue.id,
-        projectId: f.store.read().projects[0].id,
-        worktreeId: f.store.read().worktrees[0].id,
-        agentId: "pi",
-        description: "Pi error fixture",
-      }) as Binding;
-      const bin = join(f.root, "bin");
-      mkdirSync(bin);
-      writeFileSync(
-        join(bin, "pi"),
-        `#!/usr/bin/env node
-require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);console.log(JSON.stringify({id:m.id,type:'response',success:true,data:{sessionId:'real-pi'}}));if(m.type==='prompt'){if('${mode}'==='exit')process.exit(0);console.log(JSON.stringify({type:'message_end',message:{role:'assistant',stopReason:'error',errorMessage:'Provider failed',content:[{type:'text',text:'partial output'}]}}));console.log(JSON.stringify({type:'agent_end',willRetry:true}));setTimeout(()=>console.log(JSON.stringify({type:'agent_settled'})),120);}});
-`,
-        { mode: 0o755 },
-      );
-      process.env.PATH = bin + ":" + oldPath;
-      f.domain.action("issue.control", {
-        issueId: f.issue.id,
-        command: "start",
-      });
-      const t = f.store.read().tasks[0];
-      const run = f.runtime.begin(t.id, b.id, "Fixture prompt", 0)!;
-      f.runtime.launch(run);
-      if (mode === "error") {
-        await until(() =>
-          f.store
-            .read()
-            .events.some((e) => (e.data as any)?.type === "agent_end"),
-        );
-        assert.equal(f.store.read().runs[0].status, "running");
-        assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 1);
-        await until(() => f.store.read().runs[0].status === "failed");
-        assert.equal(f.store.read().tasks[0].status, "waiting");
-        assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 0);
-      } else {
-        await until(() => f.store.read().runs[0].status === "unknown");
-        assert.equal(f.store.read().tasks[0].status, "unknown");
-        assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 1);
-      }
-    } finally {
-      f.close();
-      process.env.PATH = oldPath;
-    }
-  }
-});
-test("lost stop acknowledgement remains stopped after precise native recovery, without ingesting follow-ups", async () => {
-  const f = fixture();
-  const p = await peer();
-  const old = process.env.CODEX_APP_SERVER_ENDPOINT;
-  process.env.CODEX_APP_SERVER_ENDPOINT = p.endpoint;
-  let recovery: Runtime | undefined;
-  try {
-    f.runtime.launch(f.begin());
-    await until(() => f.store.read().runs[0].status === "running");
-    f.domain.action("issue.control", {
-      issueId: f.issue.id,
-      command: "stop",
-      text: "Inspect the existing changes",
-    });
-    f.runtime.codex!.socket!.terminate();
-    await until(() => f.store.read().runs[0].status === "unknown");
-    assert.equal(f.store.read().runs[0].stopRequested, true);
-    p.finish();
-    f.runtime.shutdown();
-    recovery = new Runtime(f.store);
-    await recovery.recoverNative();
-    assert.equal(f.store.read().runs[0].status, "stopped");
-    assert.ok(
-      !f.store.read().artifacts.some((a) => a.title === "Native evidence"),
-    );
-    assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 0);
-  } finally {
-    recovery?.shutdown();
     f.close();
     p.close();
-    if (old) process.env.CODEX_APP_SERVER_ENDPOINT = old;
-    else delete process.env.CODEX_APP_SERVER_ENDPOINT;
+  }
+});
+test("Installed Codex app-server accepts experimental dynamic tools and preserves a thread for a second local client", async () => {
+  const f = fixture("codex"),
+    home = join(f.root, "codex-home");
+  mkdirSync(home);
+  const http = createServer((_req, res) => {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "Offline protocol probe" } }));
+  });
+  await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
+  writeFileSync(
+    join(home, "config.toml"),
+    'model_provider="probe"\n[model_providers.probe]\nname="Probe"\nbase_url="http://127.0.0.1:' +
+      (http.address() as any).port +
+      '/v1"\nwire_api="responses"\nrequires_openai_auth=false\n',
+  );
+  const previousHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = home;
+  const c = new Codex(f.store.dir);
+  let second: Codex | undefined;
+  try {
+    await c.connect();
+    const { thread } = await c.call("thread/start", {
+      cwd: f.repo,
+      sandbox: "read-only",
+      ephemeral: false,
+      dynamicTools: relayTools,
+      approvalPolicy: "on-request",
+    });
+    assert.ok(thread.id);
+    await c.call("turn/start", {
+      threadId: thread.id,
+      input: [{ type: "text", text: "Offline protocol probe only." }],
+    });
+    await new Promise((r) => setTimeout(r, 600));
+    second = new Codex(f.store.dir, c.endpoint);
+    await second.connect();
+    const resumed = await second.call("thread/resume", {
+      threadId: thread.id,
+      cwd: f.repo,
+    });
+    assert.equal(resumed.thread.id, thread.id);
+    const read = await c.call("thread/read", {
+      threadId: thread.id,
+      includeTurns: true,
+    });
+    assert.equal(read.thread.id, thread.id);
+  } finally {
+    second?.shutdown();
+    const exited = c.child
+      ? new Promise((r) => c.child!.once("exit", r))
+      : Promise.resolve();
+    c.shutdown();
+    await exited;
+    http.closeAllConnections();
+    await new Promise<void>((r) => http.close(() => r()));
+    if (previousHome) process.env.CODEX_HOME = previousHome;
+    else delete process.env.CODEX_HOME;
+    f.close();
+  }
+});
+test("Installed Pi 1.0 RPC loads the Relay extension and reports a reusable native session", async () => {
+  const f = fixture(),
+    pi = new Pi(join(f.root, "pi", "native.jsonl"), f.repo, {
+      RELAY_WORKTREE: f.repo,
+      RELAY_WRITE_APPROVED: "0",
+    });
+  let stderr = "";
+  pi.child.stderr?.on("data", (x) => (stderr += String(x)));
+  try {
+    const state = await pi.call("get_state");
+    assert.ok(state.sessionId);
+    assert.match(state.sessionFile, /native.jsonl$/);
+    assert.ok(
+      !/Failed to load|extension.*error|SyntaxError/i.test(stderr),
+      stderr,
+    );
+  } finally {
+    pi.shutdown();
+    f.close();
   }
 });

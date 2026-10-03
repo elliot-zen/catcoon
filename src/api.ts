@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { State } from "../server/types";
+import type { State, StreamItem } from "../server/types";
 export class ApiError extends Error {
   code: string;
   details: any;
@@ -34,6 +34,10 @@ export type Action = (
   payload?: Record<string, unknown>,
 ) => Promise<any>;
 export function useRelay() {
+  const [streamIssue, setStreamIssue] = useState("");
+  const [streamItems, setStreamItems] = useState<Record<string, StreamItem[]>>(
+    {},
+  );
   const [state, setState] = useState<State>();
   const [connection, setConnection] = useState("");
   const [lastUpdate, setLast] = useState("");
@@ -56,6 +60,61 @@ export function useRelay() {
     const t = setInterval(() => void load(), 2000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {
+    if (!streamIssue) return;
+    let alive = true,
+      source: EventSource | undefined;
+    void api("/api/issues/" + streamIssue + "/items")
+      .then((snapshot) => {
+        if (!alive) return;
+        setStreamItems(
+          Object.fromEntries(snapshot.runs.map((r: any) => [r.runId, r.items])),
+        );
+        source = new EventSource(
+          "/api/stream?issueId=" + streamIssue + "&after=" + snapshot.lastSeq,
+        );
+        source.addEventListener("state.changed", () => void load());
+        source.addEventListener("stream", (event) => {
+          const p = JSON.parse((event as MessageEvent).data);
+          setStreamItems((old) => {
+            const items = old[p.runId] || [],
+              previous = items.find((i) => i.itemKey === p.itemKey);
+            if (previous && previous.lastSeq >= p.seq) return old;
+            const item: StreamItem = {
+              runId: p.runId,
+              itemKey: p.itemKey,
+              kind: p.kind,
+              status: p.status,
+              content:
+                p.operation === "append"
+                  ? (previous?.content || "") + p.data
+                  : p.operation === "status"
+                    ? previous?.content || ""
+                    : p.data,
+              metadata: { ...previous?.metadata, ...p.metadata },
+              firstSeq: previous?.firstSeq || p.seq,
+              lastSeq: p.seq,
+            };
+            return {
+              ...old,
+              [p.runId]: [
+                ...items.filter((i) => i.itemKey !== p.itemKey),
+                item,
+              ].sort((a, b) => a.firstSeq - b.firstSeq),
+            };
+          });
+        });
+        source.onerror = () => setConnection("Stream reconnecting…");
+        source.onopen = () => setConnection("");
+      })
+      .catch((e) => {
+        if (alive) setConnection(String(e));
+      });
+    return () => {
+      alive = false;
+      source?.close();
+    };
+  }, [streamIssue]);
   const action: Action = async (type, payload = {}) => {
     const signature = JSON.stringify({ type, payload });
     if (!operation.current.has(signature))
@@ -81,7 +140,18 @@ export function useRelay() {
       setBusy(pendingCount.current > 0);
     }
   };
-  return { state, action, load, error, setError, busy, connection, lastUpdate };
+  return {
+    state,
+    action,
+    load,
+    error,
+    setError,
+    busy,
+    connection,
+    lastUpdate,
+    streamItems,
+    setStreamIssue,
+  };
 }
 export function useDraft(key: string) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
