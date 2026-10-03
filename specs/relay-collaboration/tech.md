@@ -81,6 +81,8 @@ Final 仅在 Issue 已 Start，且无未完成 task、无有效 Pending/Changes 
 
 ### 3.4 Triage 与调度
 
+`src/Issues.tsx:IssueDetail` 的需求正文直接接 Activity；不渲染 Submit task、Publish artifact、Request approval、Request human input 工具栏或对应创建弹窗，也不将它们移入更多菜单。Start 通过 `issue.control` 建立初始 task；`Runtime.complete → ingest` 自动持久化 Agent 的成果、请求和后续 task，审批请求自动加入后续 task 的 dependencyIds；`request.decide` 保存 Human 决定，worker 重新评估依赖并经 Jev 选择下一 binding。无待办且满足条件时 worker 自动创建最终验收。人工只能通过现有请求答复/决定和运行控制介入正常轮转；无需调用四类创建操作推进下一步。既有 task.create、artifact.publish、request.create HTTP 契约保留以兼容已有调用；Spec 编辑区的文档版本发布入口保留，Issue 页面没有这些创建入口。无结构化/空交接时保留可检查报告并请求核查，提示用户提供纠正目标或核查后重试，不引导用户使用已移除的手工提交入口。
+
 每秒 worker 对 started 非 paused 非 Done 的 Issue 评估待办；inflight Set 阻止同 Issue 重入。已运行/依赖未通过时 wait，不请求 Jev；Worktree锁在选中绑定的启动事务检查，竞争时记录等待并退避60秒。可用绑定选择候选携带实际 Agent 可用性，再发 Choice；选中后校验真实目录、分支、工具和材料（最多254绑定加human），state 包括需求、task、绑定 descriptions、有效决定、成果完整快照、未决请求和上下游。confidence>=0.65 且 choice 是现有 binding 才继续，低置信/冲突/无候选转 Human；原因是选择值及置信度而非伪造模型解释。Human 请求包含明确待办及绑定选项，选中后必须 submit；有效答案绑定已被移除不能派发，重新要求澄清。手动指定绑定仍检验 scope 和 dependencies。
 
 Jev 超时15秒、429/529/5xx/网络最多3次指数退避，记录每次实际尝试，不重试401/422；连接测试同一 endpoint 使用固定无敏感状态。失败记录等待原因不模拟成功，配置保存/恢复后重评估。每 task 最多8次执行、每 run30分钟、每次 Start/Resume 自动推进窗口最多64次实际运行；任务上限变为 waiting 并请求 Human，链式64次上限同时暂停 Issue；明确 Resume 开新窗口，不重放已有任务。Task Retry 在提供核查依据后可重置8次窗口。无进展/相同事项按 task/request ID 去重，不根据文本重复生成。Start/绑定变化/请求决定使对应 waiting任务重新评估；待解请求不反复调用 Jev。
@@ -119,6 +121,7 @@ Spec编辑draft按worktree/document键，读取已有文件，显式Save，发�
 | worker/runtime      | paused时approve、unknown重启、同path双Issue                  | 保存决定无派发、保留锁不重放、互斥写入                | AC33–35/39 |
 | domain              | 未完成task普通review、final批准迟到、reopen                  | 阻止Done，仅final完成，迟到保留历史，显式修订         | AC36–37    |
 | files/browser       | 切页独立draft、外部文件变化、invalid symlink                 | 输入不串页、409保留local/current、不能越目录          | AC38/41    |
+| worker/browser | Start后规格绑定交接成果/审批/后续task，Human批准 | 审批前无执行，批准后自动选实现绑定，最终自动送验收；Issue两种语言及更多菜单无四个创建入口 | AC45 |
 | integration/browser | 工具缺失、Jev401/429/timeout、搜索多个关联、theme/locale     | 真实状态、有限重试、Issue去重、偏好持久化无密钥       | AC42–44    |
 
 构建 TypeScript 检查、Vite生产build；API smoke真实临时Git目录验证登记/文件保存；浏览器测试创建Issue、绑定、请求两入口、搜索、主题、语言、无示例数据。真实Jev认证与真实Agent端到端执行需要用户在本地配置密钥及工具认证，不能由mock测试声称已通过。
