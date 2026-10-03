@@ -466,20 +466,58 @@ export class Domain {
         if (i.revision !== p.revision)
           fail(409, "STALE_VERSION", "Issue changed");
         if (p.title !== undefined || p.description !== undefined) {
-          if (s.runs.some((r) => r.issueId === i.id && activeRun(r)))
-            fail(
-              409,
-              "WORKTREE_BUSY",
-              "Stop the current execution before changing its target",
-            );
-          if (p.title !== undefined) i.title = text(p.title, "Title", 500);
-          if (p.description !== undefined) {
-            if (typeof p.description !== "string")
-              fail(400, "INVALID_INPUT", "Description must be text");
-            i.description = p.description;
+          const title =
+            p.title === undefined ? i.title : text(p.title, "Title", 500);
+          const description =
+            p.description === undefined ? i.description : p.description;
+          if (typeof description !== "string")
+            fail(400, "INVALID_INPUT", "Description must be text");
+          if (title !== i.title || description !== i.description) {
+            if (i.status === "Done")
+              fail(
+                409,
+                "DEPENDENCY_BLOCKED",
+                "Use Reopen to change a completed target",
+              );
+            if (
+              s.runs.some((r) => r.issueId === i.id && activeRun(r)) ||
+              i.sessions.some((session) =>
+                ["busy", "unknown"].includes(session.status),
+              )
+            )
+              fail(
+                409,
+                "WORKTREE_BUSY",
+                "Stop the current execution before changing its target",
+              );
+            i.title = title;
+            i.description = description;
+            i.targetRevision++;
+            for (const q of s.requests.filter(
+              (q) =>
+                q.issueId === i.id &&
+                q.targetRevision !== i.targetRevision &&
+                !q.native &&
+                ["Pending", "Changes requested", "Cancelled"].includes(
+                  q.status,
+                ),
+            )) {
+              q.status = "Superseded";
+              q.revision++;
+              notifyResolved(s, q);
+            }
+            for (const t of s.tasks.filter(
+              (t) =>
+                t.issueId === i.id && !["done", "cancelled"].includes(t.status),
+            ))
+              t.status = "cancelled";
+            if (i.started)
+              task(s, i.id, i.description || i.title, {
+                kind: "goal",
+                sourceId: i.id,
+              });
+            dirty(s, i.id, "target.updated");
           }
-          i.targetRevision++;
-          dirty(s, i.id, "target.updated");
         }
         if (p.priority !== undefined) {
           if (!Number.isInteger(p.priority) || p.priority < 0 || p.priority > 4)

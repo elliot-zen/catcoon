@@ -10,6 +10,7 @@ import DirectoryField, {
   filesPayload,
 } from "./ui-data";
 import { useDraft } from "./api";
+import IssueDescription from "./issue-description";
 import type {
   Event as RelayEvent,
   Request as RelayRequest,
@@ -3342,9 +3343,13 @@ function RelayView() {
               <div className="text-base font-semibold tracking-tight">
                 {selectedIssue.title}
               </div>
-              <div className="mt-3 max-w-2xl text-[13px] leading-6 text-muted-foreground">
-                {selectedIssue.description}
-              </div>
+              {rawIssue && (
+                <IssueDescription
+                  key={rawIssue.id}
+                  issue={rawIssue}
+                  language={language}
+                />
+              )}
 
               <div className="mt-12 flex items-center gap-1">
                 <Button

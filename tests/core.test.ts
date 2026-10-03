@@ -36,6 +36,121 @@ function finish(
   f.runtime.started(r.id, r.sessionId, id());
   f.runtime.complete(r.id, true, text, "");
 }
+test("Description editing preserves text, uses CAS, and leaves unstarted Issues in Todo", () => {
+  const f = fixture();
+  try {
+    const initial = f.state().issues[0];
+    f.domain.action("issue.update", {
+      issueId: initial.id,
+      revision: initial.revision,
+      description: "First line\nSecond line",
+    });
+    const changed = f.state().issues[0];
+    assert.equal(changed.description, "First line\nSecond line");
+    assert.equal(changed.targetRevision, initial.targetRevision + 1);
+    assert.equal(changed.status, "Todo");
+    assert.equal(f.state().tasks.length, 0);
+    assert.throws(
+      () =>
+        f.domain.action("issue.update", {
+          issueId: initial.id,
+          revision: initial.revision,
+          description: "Overwrite",
+        }),
+      code("STALE_VERSION"),
+    );
+    f.domain.action("issue.update", {
+      issueId: changed.id,
+      revision: changed.revision,
+      description: changed.description,
+    });
+    assert.equal(f.state().issues[0].targetRevision, changed.targetRevision);
+    const current = f.state().issues[0];
+    f.domain.action("issue.update", {
+      issueId: current.id,
+      revision: current.revision,
+      description: "",
+    });
+    assert.equal(f.state().issues[0].description, "");
+  } finally {
+    f.close();
+  }
+});
+test("Target edits replace outstanding work and requests while retaining history and requiring fresh approval", async () => {
+  const f = fixture();
+  try {
+    f.approve();
+    assert.equal(
+      approvalIds(
+        f.state(),
+        f.issue.id,
+        find(f.state().worktrees, f.tree.id),
+        "implement",
+      ).length,
+      1,
+    );
+    const r = begin(f, "implement");
+    const update = () =>
+      f.domain.action("issue.update", {
+        issueId: f.issue.id,
+        revision: f.state().issues[0].revision,
+        description: "New target\nVerify farewell",
+      });
+    assert.throws(update, code("WORKTREE_BUSY"));
+    assert.equal(f.state().issues[0].targetRevision, 1);
+    finish(f, r, "Implemented greeting and ran its tests.");
+    model(f, (input) => typed(input, "final", "none", "human", 1));
+    await settle(f.runtime);
+    const final = f.state().requests.find((q) => q.kind === "final")!;
+    assert.ok(final);
+    const oldTask = f.store.change((s) => {
+      const t = task(s, f.issue.id, "Old follow-up");
+      makeRequest(s, {
+        issueId: f.issue.id,
+        kind: "input",
+        title: "Old question",
+        scope: "issue",
+      });
+      return t;
+    });
+    f.domain.action("issue.control", { issueId: f.issue.id, command: "pause" });
+    update();
+    const s = f.state(),
+      i = s.issues[0];
+    assert.equal(i.control, "paused");
+    assert.equal(i.status, "In progress");
+    assert.equal(i.triage.dirty, true);
+    assert.equal(i.targetRevision, 2);
+    assert.equal(find(s.tasks, oldTask.id).status, "cancelled");
+    assert.deepEqual(
+      s.tasks.filter((t) => t.status === "pending").map((t) => t.text),
+      ["New target\nVerify farewell"],
+    );
+    assert.equal(find(s.requests, final.id).status, "Superseded");
+    assert.equal(
+      s.requests.find((q) => q.title === "Old question")!.status,
+      "Superseded",
+    );
+    assert.ok(s.notifications.every((n) => n.archived));
+    assert.equal(
+      s.requests.find((q) => q.action?.type === "approve_spec")!.status,
+      "Approved",
+    );
+    assert.deepEqual(
+      approvalIds(s, i.id, find(s.worktrees, f.tree.id), "implement"),
+      [],
+    );
+    assert.equal(find(s.runs, r.id).status, "completed");
+    assert.equal(
+      find(s.runs, r.id).result,
+      "Implemented greeting and ran its tests.",
+    );
+    assert.equal(find(s.runs, r.id).snapshot.targetRevision, 1);
+    assert.throws(() => f.decide(final.id), code("REQUEST_RESOLVED"));
+  } finally {
+    f.close();
+  }
+});
 test("Worktrees require exact project Spec/version; shared drafts use CAS and versions are immutable", () => {
   const f = fixture();
   try {
@@ -291,6 +406,17 @@ test("Actual evidence and goal evaluation produce final request; only Human deci
     assert.ok(final);
     assert.equal(f.state().issues[0].status, "Human input");
     f.decide(final.id);
+    const done = f.state().issues[0];
+    assert.throws(
+      () =>
+        f.domain.action("issue.update", {
+          issueId: done.id,
+          revision: done.revision,
+          description: "Change the completed goal",
+        }),
+      code("DEPENDENCY_BLOCKED"),
+    );
+    assert.equal(f.state().issues[0].targetRevision, done.targetRevision);
     assert.equal(f.state().issues[0].status, "Done");
     f.domain.action("comment.create", {
       issueId: f.issue.id,

@@ -54,6 +54,68 @@ try {
     .getByRole("button", { name: "Create issue", exact: true })
     .click();
   await page.getByText("No assignments").waitFor();
+  const editDescription = page.getByRole("button", {
+      name: "Edit description",
+      exact: true,
+    }),
+    description = page.getByRole("textbox", {
+      name: "Issue description",
+      exact: true,
+    }),
+    savedDescription = page.getByTestId("issue-description");
+  await editDescription.click();
+  await expect(description).toHaveValue("Shared Spec and automatic progress.");
+  await description.fill("Shared Spec\nand automatic progress.");
+  await page
+    .getByRole("button", { name: "Save description", exact: true })
+    .click();
+  await expect(savedDescription).toHaveText(
+    "Shared Spec\nand automatic progress.",
+  );
+  assert.equal(
+    state().issues[0].description,
+    "Shared Spec\nand automatic progress.",
+  );
+  const goalRevision = state().issues[0].targetRevision;
+  await editDescription.click();
+  await description.press("Control+Enter");
+  await expect(savedDescription).toBeVisible();
+  assert.equal(state().issues[0].targetRevision, goalRevision);
+  await editDescription.click();
+  await description.fill("Cancelled input");
+  await description.press("Escape");
+  await expect(savedDescription).toHaveText(
+    "Shared Spec\nand automatic progress.",
+  );
+  assert.equal(state().issues[0].targetRevision, goalRevision);
+  await editDescription.click();
+  await description.fill("Save on blur");
+  await page.getByRole("button", { name: "Add comment", exact: true }).click();
+  await expect(savedDescription).toHaveText("Save on blur");
+  await editDescription.click();
+  await description.fill("Retain my conflicting input");
+  const currentIssue = state().issues[0];
+  app.domain.action("issue.update", {
+    issueId: currentIssue.id,
+    revision: currentIssue.revision,
+    description: "External updated body",
+  });
+  await description.press("Control+Enter");
+  await expect(savedDescription).toHaveText("External updated body");
+  assert.equal(state().issues[0].description, "External updated body");
+  assert.match(dialogs.pop(), /Issue changed/);
+  await page.reload();
+  await editDescription.click();
+  await expect(description).toHaveValue("Retain my conflicting input");
+  await description.press("Control+Enter");
+  await expect(savedDescription).toHaveText("Retain my conflicting input");
+  await page.reload();
+  await editDescription.click();
+  await expect(description).toHaveValue("Retain my conflicting input");
+  await description.fill("");
+  await description.press("Control+Enter");
+  await expect(savedDescription).toHaveText("Add description…");
+  assert.equal(state().issues[0].description, "");
   for (const name of [
     "Submit task",
     "Publish artifact",
@@ -161,6 +223,11 @@ try {
   await page.getByRole("button", { name: "Start", exact: true }).click();
   const r = app.runtime.begin(state().tasks[0].id, binding.id, "spec");
   app.runtime.started(r.id, r.sessionId, "browser-turn");
+  await expect(editDescription).toBeDisabled();
+  await expect(editDescription).toHaveAttribute(
+    "title",
+    "Stop the current execution before editing",
+  );
   app.runtime.streams.codex(find(state().runs, r.id), {
     method: "item/started",
     params: {
@@ -332,7 +399,7 @@ try {
   assert.deepEqual(errors, []);
   assert.deepEqual(dialogs, []);
   console.log(
-    "Browser passed: design geometry, real directories, system Spec CAS/conflicts, binding, single Activity stream, explicit upgrade approval and preferences.",
+    "Browser passed: inline Issue editing, save/cancel/conflict recovery, design geometry, real directories, system Spec CAS/conflicts, binding, single Activity stream, explicit upgrade approval and preferences.",
   );
 } finally {
   await browser?.close();
