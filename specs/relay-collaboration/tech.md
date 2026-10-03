@@ -405,24 +405,55 @@ final、批准升级、关联请求答复、报告应用与通知状态均在单
 
 ## 11. 验证
 
-规格阶段不运行应用、迁移用户数据库或修改代码。重构时验证下表，mock 不能证明真实模型路由或用户目标完成。
+验收编号与可观察结果统一定义于 [PRODUCT §11](product.md#11-验收场景)。下表给出验证入口、必要输入和内部断言；全部用于重构后的目标契约。规格阶段只检查文档，不运行应用或迁移用户数据。
 
-| 层级 / 对应产品 | 场景 | 核验 |
+### 11.1 自动化验证
+
+后端使用临时 SQLite / Git、可控原生 peers 和注入 Jev typed 响应；时间与故障可控，不依赖真实模型随机选择。每次失败同时检查事务内数据和原生调用计数，不能只断言错误文案。
+
+| 层级 / 编号 | 关键输入与操作 | 必须核验 |
 | --- | --- | --- |
-| domain / P01–03 | 多 Spec、多 Worktree、同名、固定版本和并发草稿 | 正确 ID 归属、共享草稿、独立 pin、冲突无覆盖。 |
-| domain/API / P04–05 | 未批准、新旧版本、明确组合升级、忙目录、并发 pin | 实现被拦、授权准确、无部分批准 / 升级、其他目录不变。 |
-| worker / P06–07 | 无 JSON / tasks 的成功结果、自然语言修订结果、仍缺目标、绑定补齐 | 都返回 Triage；可选 work_item_complete 更新准确事项，配置 Resolved，业务审批保持 Pending，不空队列验收。 |
-| domain/worker / P08 | Pause 决定、Stop 文本、确认停止、有效核查 Resume | 暂停无派发，纠正更新目标，不生成 stop 开发任务；恢复不依赖字符串。 |
-| domain/worker / P09、P19 | 高完成判断但硬条件失败、普通批准、最终批准、Reopen | 未满足不验收；Done 唯一入口、迟到不重开、新目标暂停。 |
-| store/native / P10 | 同工具多绑定、重复 Run、重启与会话缺失 | Issue 内 session 独立，ID 保留，Run 历史可定位，不自动新开。 |
-| Jev fixture / P11 | typed answer缺字段、概率、低置信、相互矛盾、过期 snapshot | 无派发、明确原因，正确模型参数和有效 state，无秘密 / thinking。 |
-| context / P12 | 固定版本、待审草稿、决定失效、附件缺失、256KB | 正确原文与边界、不用 latest 代替 pin，不静默截断。 |
-| native/streams / P13–14 | 交错 Read / Exec / thinking / answer、多个块、权威结束 | 单 Run 多块更新、调用 ID 隔离，结束替换，不提前终结。 |
-| SSE/API / P14 | 快照订阅窗口、断线补发、重复终态、慢客户端、旧 token重连 | 无丢失 / 重复，按 seq 补发，原生快照校正，不拖阻生产者。 |
-| domain/native / P15–16 | 双入口、外部原生决定、取消、两个阻塞、跨绑定答复 | 单次决定、业务审批独立、正确恢复，仅解除关联依赖。 |
-| recovery / P17–18 | turn/start响应丢失、unknown重启、Pi agent_end继续、目录竞争 | 准确身份恢复、不重发、不提前释放锁、只等真正终态。 |
-| integration / P18 | 两客户端同 Codex thread，终端独立 turn | 相同 session 历史、忙时等待、不把外部工作冒作平台交付。 |
-| browser / P20 | 原设计布局、Spec字段选择创建、保存冲突、请求、语言搜索 | 仅授权变化、真实数据、无示例成功、输入隔离与偏好保留。 |
-| migration / P01、P10、P17 | schema2备份、旧共享路径、不可读、孤立Session、旧审批 | 精确回填或整体回滚，原历史与锁保留，无假批准 / 同名合并。 |
+| domain/API / P01、P02 | 多 Spec、两个已有 Worktree、不同 pin；无 Spec / 跨项目 / 分支错误 / canonical 重复目录及 newSpec 组合动作。 | 正确归属、固定引用必填；非法输入无残留实体，组合创建同事务，Git 分支与文件不被改写。 |
+| specs/browser / P03 | 两目录关联同 specId；草稿 CAS 竞争、重载、修改同名本地文件。 | 数据库正文和 draftRevision 为权威；共享可见、冲突输入保留、历史版本 hash 与 pin 不变。 |
+| native/domain / P04 | spec 模式读取 / relay_report，随后尝试未批准的写入与命令；再使用有效批准启动。 | Codex 每 turn 的 sandboxPolicy、Pi active tools 与嵌套 tool_call 拦截实际生效；空 pair 不可批准，实现批准与 writableRoots 准确。 |
+| specs/domain / P05 | 冻结 V2 + 升级 W1；并发改变 fromVersion / revision，busy 与 unknown 各测一次。 | Request、批准及所有目标 pin 原子提交或回滚；W2 不变，受影响 Issue dirty，旧 Run.snapshot 不变。 |
+| worker / P06、P22 | 自然语言终态、无 tasks / JSON；当前已获批且可直接实现，另有不相关绑定。 | 真正终态令 dirty；重新询问动作 / mode / route，contextRef 准确；不强制 spec 阶段或遍历绑定，不因无 JSON 卡死 / 空队列完成。 |
+| worker/domain / P07 | 缺绑定请求后补齐；Agent / 目录恢复，业务审批仍 Pending。 | configuration 按 conditionKey 置 Resolved，实际条件变化触发一次评估；业务决定和其他依赖保持。 |
+| domain/worker / P08 | 活跃 Run 时 Pause，再保存决定、完成旧 Run、Resume。 | control 与主状态独立，旧执行可结束、暂停期间 launch 次数不增，Resume 使用新 evaluationRevision。 |
+| domain/worker / P09 | goal_complete 达标但有缺口 / unknown / 无批准；合法 final、changes、重新 final、旧确认。 | 硬条件失败无 final；自身 Pending 可被排除且仅排除自身，最终批准唯一 Done 入口；修订、新 Request 与冻结证据不复用旧决定。 |
+| store/native / P10、P27 | 同 Agent 多绑定 / 多 Issue、连续 Run、重启；改职责、移除、换 Agent / 目录。 | Issue.sessions 独立、准确 ID 复用；旧忙状态阻止更换，确认后归档建新范围；Run.sessionId 历史不改写。 |
+| Jev/context / P11 | 完整 state / questions，缺字段、NaN、错 type / choice / 概率和、低置信与动作矛盾；模型响应前改变目标 / pin / 绑定。 | 四个基本题与可选事项题参数准确；坏响应不派发，过期 Evaluation discarded，保存实际 typed answer；Agent 路由建议不能跳过 Jev。 |
+| context / P12 | 固定 V1、latest V2、待审草稿、旧原生历史、失效决定、附件不可读；必要输入超过256KB。 | Jev / Agent 两种快照各自字段正确，必要原文与范围齐备；无 latest 替换 pin、其他完整会话 / thinking / 秘密，容量不足明确阻塞。 |
+| native/streams/browser / P13 | Read / Exec 与 text / thinking delta 交错、多内容块及调用 ID，持续展开 / 收起。 | 一 Run 一顶层行，首次 seq 顺序与真实调用名称；参数、输出、状态和文本实时更新，不以每句 / delta 创建行，不重置展开。 |
+| native/SSE / P14 | Codex item 完成但 turn 未完成；Pi agent_end 后继续，最终 settled；快照订阅窗口、断线、重复最终消息、慢客户端、64KB超限。 | 仅整轮终态结束；SQLite seq 补发无遗漏，完整权威内容 replace，重复不重复摄入；无公开 thinking 不补造，超限明确，生产者不被阻塞。 |
+| domain/browser/native / P15 | Activity / Inbox 并发决定，未提交输入、已读 / 归档 / cancel、终端 resolved；唯一 / 同名 Agent 简称。 | 同 requestId 单次决定，空答复与歧义不改请求，草稿保留；原生 delivery 可核查，不产生业务批准，取消不授予权限。 |
+| domain/worker / P16 | 原工作有两个依赖，另一绑定回答原 requestId；无匹配者或答错 ID。 | 只解除关联输入，澄清任务仅豁免自己的请求；无匹配沿原请求升级 Human，不重复通知，不回答无关问题。 |
+| recovery/native / P17 | turn/start 回应丢失、失联 / 未确认停止后重启；原生分别报告 active / terminal / missing。 | 精确身份恢复、不重发 prompt；unknown 锁保留，已知终态只摄入一次，reconcile 无 evidence 拒绝。 |
+| native/domain / P18 | 同 Issue 两候选、两个 Issue 同 canonical path，终端活跃 turn 与原生额外 turn。 | 最多一个平台执行、目录锁互斥；外部观察 origin=terminal，不应用平台报告或当作 goal 完成；Pi 恢复不宣称并发 TUI 附着。 |
+| domain / P19 | Done 的迟到事件 / 评论 / pin 变化，空 Reopen、合法新目标、Resume。 | 保持 Done；空目标拒绝，合法 Reopen 增 targetRevision、新 goal、control=paused，历史不变。 |
+| browser/API / P20 | 在相同视口对照只读设计页面 / 弹窗，实际提交和失败、切换对象、搜索 / 偏好 / 统计。 | 布局只有已批准例外；不新增 task / artifact / session 入口，保存真实，输入隔离、去重统计与偏好正确，token 不更新业务排序。 |
+| specs/domain / P23 | V2 changes → V3 proposal；单批准 / 单升级、跨 Issue / scope 批准和无关草稿。 | 修订可执行而被拒版本不可实施；新版本独立批准，pin 与批准不可相互推断，适用授权只在准确范围有效。 |
+| report/API / P24 | 同 toolCallId 重送、同幂等键异内容、错误 draftRevision / specId / requestId，混入 Agent approve / pin / final。 | 报告原子应用或拒绝，无部分版本 / 请求；原生事实独立保存，同调用只发布一次，宿主不信任自报 runId。 |
+| domain/native / P25 | Stop 保存纠正，clear_queue / abort / interrupt 后停止确认丢失；核查后 Resume。 | stopping 与锁保持到准确确认；纠正不成为 stop 任务，原地副作用保留，stopResolved 后上下文只保留业务纠正和历史停止。 |
+| worker/store / P26 | 多触发合并，等待期间轮询 / 重启；实际条件恢复；仅 token / 已读 / 草稿变化。 | dirty 与 triggerIds 持久化，旧应用不能清掉新触发；条件恢复才评估，无新事实不重复模型 / 请求 / Run。 |
+| migration / P28 | schema2 备份及 session / Run 精确关联；旧同名不同路径、共享来源、文件缺失、不可读、孤立 session、无对应原文批准。 | schema3 原子回填或整体回滚；只在准确来源时去重，missing 标明，不猜身份 / 批准，不释放 unknown 锁或启动 Agent。 |
+| worker/native / P29 | Jev 网络 / 429 / 5xx 与401 / 422，超时；明确失败 / 无 JSON / unknown；3轮无进展及8 / 64次、30分钟边界。 | 暂时错误有限重试、认证错误不重试；等待结构可恢复，未知不重放，无 JSON 不冒作失败；限额产生可定位请求，证据来源真实。 |
+| HTTP/context / P30 | 同源与跨源写入、同键重试 / 异请求；公开 state、流和两种 prompt，超限输入 / 附件。 | 同源允许、跨源拒绝，同键返回原结果 / 异请求409；无密钥 / 认证泄露，超限错误明确，不静默裁去审批正文。 |
 
-构建验证 TypeScript 与生产打包；后端使用临时 SQLite / Git、可控原生 peers 和注入 Jev 响应。真实 Jev + Agent 端到端另用隔离目录和用户本地凭据，不能因 fixture 通过声明其已验证。
+### 11.2 真实端到端验收
+
+P21 必须使用真实 Jev、已认证 Agent、隔离 Git / Worktree 和独立 DATA_DIR：从空系统 Spec 开始，在浏览器 Start，Agent 自主规划并经系统工具发布，Human 批准明确版本及目录升级，随后自动实现与验证，最后由 Human 验收。保留 Evaluation、Issue.sessions、Run 快照、实际代码 / 测试证据及审批引用，证明整条链路无需人工创建后续 tasks。
+
+P22 再使用已有、范围准确的获批版本完成一个可直接实现的目标；证明无需固定 Codex → Pi 顺序、不强制所有绑定执行，也不强制每轮重新编写 Spec。只检查路由符合职责、实际成果覆盖需求，不要求模型每次选择完全相同的步骤。
+
+原生互通单独核验 P18：本地 terminal 通过相同 app-server endpoint / threadId 读到 Relay 历史，暂停 Relay 后在 terminal 新开 turn，Relay 识别 busy 与外部来源；Pi 1.0.0 在 RPC 退出后从相同 sessionFile 恢复。协议 peer 只能证明适配器处理，不能代替真实客户端互通。
+
+### 11.3 现有测试的调整边界
+
+| 现有位置 | 与本版契约的对应 |
+| --- | --- |
+| tests/core.test.ts：spec CAS、missing bound material、malformed handoff、自动交接链 | 将本地文件 Spec 的断言替换为系统草稿 / 固定版本；自然语言终态必须返回 Triage，完整链不能依赖 Agent 返回 tasks 或空队列验收。报告字段错误仍验证原子拒绝，但不把原生事实清空或强制永久人工阻塞。 |
+| tests/core.test.ts：Pi filters reasoning、failure recovery；tests/native.test.ts：session / migration | 改为公开 thinking 流式持久化、共享输入不传 thinking；恢复按结构化条件判定，不能要求 reason 文案。session 从 Issue 记录读取，保留旧迁移测试并新增 schema2 → 3，核验未知运行原锁及历史引用。 |
+| tests/activity.test.ts、scripts/browser-test.mjs | 保留单 Run 聚合和独立请求，新增真实增量 / SSE 及生命周期输入；Spec 保存断言改为系统持久化、共享与 CAS，不再要求写本地 docs 文件。布局比较覆盖原设计页面和已批准交互；完整移动端与未批准入口不列为本版验收。 |
+
+构建验证 TypeScript 与生产打包；自动化记录与真实端到端记录分别标明实际执行范围。未执行 P21 / 真实互通时，不能用 mock 或既有测试通过宣称整套目标设计已经验收。
