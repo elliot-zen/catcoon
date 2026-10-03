@@ -30,7 +30,7 @@ specs/
 - `specs/spec.md` 是 Spec 索引；每个 Spec 必须在其中登记，并链接到对应的 `product.md` 和 `tech.md`。
 - 单一业务能力放在 `specs/<issue-id>/`；跨业务共享能力放在 `specs/common/<issue-id>/`。
 - 一个 `<issue-id>` 目录表示一个完整 Spec，必须同时包含 `product.md` 和 `tech.md`，不得将两者拆到不同目录。
-- `<issue-id>` 使用与产生该需求的 Issue 对应的稳定标识（如 `123` 或 `ISSUE-123`）；同一 Issue 的规格不得拆到多个目录，也不得使用与 Issue 无关的临时名称。
+- `<issue-id>` 使用与产生该需求的 Issue 对应的稳定标识（如 `123` 或 `ISSUE-123`），也可以是表达业务能力的 feature 名称（kebab-case，如 `multi-agent-issue`）；同一 Issue 或 Feature 的规格不得拆到多个目录，也不得使用与 Issue 无关的临时名称。
 - 不得在 `specs/`、`specs/common/` 或其他位置创建同一能力的平行 Spec。
 
 ## 流程
