@@ -28,8 +28,8 @@ npm start
 2. Projects → New project，选择真实 Git 仓库根目录。项目详情 → New worktree，登记已有 Worktree，填写实际分支、Spec 名称及相对目录（例如 `docs`）。应用不创建分支或清理已有文件。
 3. PRODUCT.md / TECH.md 编辑器读取所选 Spec 目录中的文件，显式 Save 写入磁盘。未存在的文档显示空内容；可以让规格任务编写它们。外部修改触发冲突，需对比内容后再保存。发布版本会冻结材料，保存草稿不会自动审批。
 4. Settings 保存 Jev API key，并 Test connection；也可以用 `TYPESAFE_API_KEY` 环境变量作为首次配置。密钥以 0600 文件独立保存，不从 API 返回。测试针对已保存的配置。
-5. 创建 Issue，准备所有绑定及其 routing description，再从详情更多菜单 Start。普通评论只提供上下文；新工作通过 Submit task 提交。手动指定绑定仍检查审批依赖和目录条件。
-6. Agent 通过实际 CLI JSONL 上报步骤及成果。输入问题和审批可从 Activity 或 Inbox 处理；选中答案后须 Submit answer。审批材料固定版本；Request changes 会产生修订任务。新审批可指定 Supersedes request，接管原依赖；发布新成果版本可指定 Supersedes。
+5. 创建 Issue，准备所有绑定及其 routing description，再从详情更多菜单 Start。开始后，Agent 自动提交成果、后续任务和问题/审批，Triage 根据绑定说明自动轮转；Issue 不提供手工创建任务、成果或请求的四个入口。普通评论只提供上下文；调整目标使用 Stop and correct，再 Resume。
+6. Agent 通过实际 CLI JSONL 上报步骤及成果。输入问题和审批可从 Activity 或 Inbox 处理；选中答案后须 Submit answer。审批材料固定版本；Request changes 会产生修订任务。Agent 在修订交接中通过 supersedesId 替代旧请求或成果，并接管对应依赖。
 7. 暂停阻止新分派，已有进程可能继续。Stop and correct 等待实际进程退出才释放锁。重启后的未确认执行显示 unknown 并保留 Worktree 锁；核查 PID、文件变更和外部副作用后，通过 Verify unknown run 保存证据，再明确重试或取消。
 8. 所有必需任务及请求处理完毕后，系统创建最终验收；Human 批准该请求才设为 Done。重开需求会创建新目标，并保持暂停直到用户 Resume。
 

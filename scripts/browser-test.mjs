@@ -67,6 +67,18 @@ try {
     .fill("Keep this text unchanged when switching languages.");
   await page.getByRole("button", { name: "Create issue", exact: true }).click();
   await page.getByText("No assignments").waitFor();
+  const assertAutomaticIssueControls = async (labels, details) => {
+    for (const name of labels)
+      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: details, exact: true }).first().click();
+    for (const name of labels)
+      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: details, exact: true }).first().click();
+  };
+  await assertAutomaticIssueControls(
+    ["Submit task", "Publish artifact", "Request approval", "Request human input"],
+    "Details",
+  );
   const project = await action("project.create", {
     name: "Browser Project",
     path: repo,
@@ -184,6 +196,10 @@ try {
   await page
     .getByText("Keep this text unchanged when switching languages.")
     .waitFor();
+  await assertAutomaticIssueControls(
+    ["提交处理事项", "发布成果", "请求审批", "请求人工答复"],
+    "详情",
+  );
   await page.screenshot({
     path: "/tmp/relay-browser-desktop.png",
     fullPage: true,

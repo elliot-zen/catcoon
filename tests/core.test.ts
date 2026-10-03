@@ -1254,3 +1254,89 @@ test("development proxy allows browser same-origin writes and rejects another or
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Start and Agent handoff automatically route across bindings after Human approval", async () => {
+  const f = fixture();
+  try {
+    const implementation = f.domain.action("binding.save", {
+      issueId: f.issue.id,
+      projectId: f.project.id,
+      worktreeId: f.tree.id,
+      agentId: "pi",
+      description: "Implement the approved specification and verify it",
+    }) as Binding;
+    f.store.saveKey("test");
+    const routed: any[] = [];
+    const launched: Run[] = [];
+    const runtime = new Runtime(f.store, (async (_url, options) => {
+      const state = JSON.parse(String(options!.body)).state;
+      routed.push(state);
+      const choice = state.task.text === "Implement the approved specification"
+        ? implementation.id : f.binding.id;
+      return Response.json({
+        model: "jev-test",
+        answers: { route: {
+          type: "choice", choice, confidence: 0.95,
+          probabilities: { [choice]: 0.95, human: 0.05 },
+        } },
+      });
+    }) as typeof fetch);
+    // Capture dispatches without running authenticated model processes.
+    runtime.launch = (run) => { launched.push(run); };
+    const advance = async () => {
+      await runtime.tick();
+      for (let n = 0; n < 100 && runtime.inflight.size; n++)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(runtime.inflight.size, 0);
+    };
+    await advance();
+    assert.equal(launched.length, 0);
+    f.start();
+    await advance();
+    assert.equal(launched.length, 1);
+    assert.equal(launched[0].bindingId, f.binding.id);
+    runtime.complete(launched[0].id, true, JSON.stringify({
+      summary: "Specification ready for review; implementation follows approval",
+      artifacts: [{ kind: "spec", title: "Reviewable specification", content: "Exact scoped specification" }],
+      requests: [{ kind: "approval", title: "Review specification", body: "Approve this version before implementation", artifactIndexes: [0], action: "Implement the approved specification", scope: "issue" }],
+      tasks: [{ text: "Implement the approved specification" }],
+    }), "");
+    let state = f.store.read();
+    const approval = state.requests.find((r) => r.kind === "approval")!;
+    assert.ok(approval);
+    assert.equal(state.issues[0].status, "Human input");
+    assert.equal(state.tasks.length, 2);
+    assert.deepEqual(state.tasks[1].dependencyIds, [approval.id]);
+    assert.equal(state.tasks[1].sourceId, launched[0].id);
+    assert.equal(state.artifacts[0].runId, launched[0].id);
+    assert.equal(state.notifications[0].requestId, approval.id);
+    await advance();
+    await advance();
+    assert.equal(launched.length, 1);
+    assert.equal(routed.length, 1);
+    f.domain.action("request.decide", { requestId: approval.id, revision: approval.revision, decision: "approve" });
+    await advance();
+    assert.equal(launched.length, 2);
+    assert.equal(launched[1].bindingId, implementation.id);
+    assert.equal(routed[1].requests.find((r: Request) => r.id === approval.id).status, "Approved");
+    assert.match(launched[1].context, /Exact scoped specification/);
+    assert.match(launched[1].context, /Approved/);
+    runtime.complete(launched[1].id, true, JSON.stringify({
+      summary: "Implementation and verification completed",
+      artifacts: [{ kind: "test", title: "Verification evidence", content: "Inspectable verification output" }],
+    }), "");
+    await advance();
+    state = f.store.read();
+    const final = state.requests.find((r) => r.kind === "final")!;
+    assert.ok(final);
+    assert.equal(final.status, "Pending");
+    assert.equal(final.artifactIds.length, 2);
+    assert.equal(launched.length, 2);
+    f.domain.action("request.decide", { requestId: final.id, revision: final.revision, decision: "approve" });
+    await advance();
+    assert.equal(f.store.read().issues[0].status, "Done");
+    assert.equal(launched.length, 2);
+  } finally {
+    f.close();
+  }
+});

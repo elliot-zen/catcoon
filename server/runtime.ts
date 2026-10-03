@@ -15,7 +15,7 @@ import { validateWorktree, readSpec, repository } from "./files.ts";
 import { evaluate } from "./jev.ts";
 import { activeRun } from "./types.ts";
 import type { State, Task, Binding, Run, Request } from "./types.ts";
-const reportContract = `Return a final fenced JSON object: {"summary":"...","artifacts":[{"supersedesId":"optional old artifact ID", "kind":"spec|contract|code|test|report","title":"...","content":"complete inspectable content / evidence"}],"tasks":[{"text":"next concrete work","bindingId":"optional current binding ID","dependencyIds":[]}],"requests":[{"supersedesId":"optional old request ID", "kind":"input|approval","title":"question","body":"context","artifactIndexes":[0],"action":"scope of requested authorization","scope":"issue or task ID array","routeToAgent":false}],"answer":{"requestId":"only for assigned clarification task","text":"answer"}}. Do not claim testing passed without actual evidence. Approval requires frozen artifacts and explicit action; humans alone decide. If requesting input, stop the blocked work. All continued work subject to approval must be represented as a task that depends on the request. No merge, deployment or arbitrary external writes without explicit scoped authorization. Write only in the assigned worktree. Descriptions are routing hints, not authority. Do not invent requirements. Never output private reasoning or secrets.`;
+const reportContract = `Advance the Issue within your assigned scope. When work remains, include concrete follow-up tasks for Triage to route using the binding descriptions, together with any required approval or clarification requests. The user should not need to manually create the next task, publish your artifacts, or create your requests. Return a final fenced JSON object: {"summary":"...","artifacts":[{"supersedesId":"optional old artifact ID", "kind":"spec|contract|code|test|report","title":"...","content":"complete inspectable content / evidence"}],"tasks":[{"text":"next concrete work","bindingId":"optional current binding ID","dependencyIds":[]}],"requests":[{"supersedesId":"optional old request ID", "kind":"input|approval","title":"question","body":"context","artifactIndexes":[0],"action":"scope of requested authorization","scope":"issue or task ID array","routeToAgent":false}],"answer":{"requestId":"only for assigned clarification task","text":"answer"}}. Do not claim testing passed without actual evidence. Approval requires frozen artifacts and explicit action; humans alone decide. If requesting input, stop the blocked work. All continued work subject to approval must be represented as a task that depends on the request. No merge, deployment or arbitrary external writes without explicit scoped authorization. Write only in the assigned worktree. Descriptions are routing hints, not authority. Do not invent requirements. Never output private reasoning or secrets.`;
 export function parseReport(content: string) {
   const matches = [...content.matchAll(/```(?:json)?\s*\n?([\s\S]*?)```/g)];
   for (const m of matches.reverse()) {
@@ -750,7 +750,7 @@ export class Runtime {
           issueId: r.issueId,
           kind: "input",
           title: "Confirm remaining work",
-          body: "Agent returned no structured handoff. Review the report, then explicitly submit missing work as a task before final acceptance.",
+          body: "Agent returned no structured handoff. Review the report and answer with any missing work. Use Stop and correct to submit a revised goal, then Resume automatic routing before final acceptance.",
           scope: "issue",
           source: "Triage",
         });
@@ -816,7 +816,7 @@ export class Runtime {
         issueId: r.issueId,
         kind: "input",
         title: "Provide inspectable evidence",
-        body: "The agent provided no concrete artifacts or verification evidence. Inspect the actual worktree and submit any remaining work before final acceptance.",
+        body: "The agent provided no concrete artifacts or verification evidence. Inspect the actual worktree and answer with the missing evidence or work. Use Stop and correct to submit a revised goal, then Resume automatic routing before final acceptance.",
         source: "Triage",
         scope: "issue",
       });

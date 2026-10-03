@@ -13,9 +13,8 @@ import {
   ArrowUp,
   MoreHorizontal,
   Copy,
-  ShieldCheck,
 } from "lucide-react";
-import type { State, Issue, Binding, Request } from "../server/types";
+import type { State, Issue, Binding } from "../server/types";
 import { activeRun } from "../server/types";
 import {
   Button,
@@ -429,265 +428,6 @@ export function BindingDialog({
     </Modal>
   );
 }
-function Composer({
-  issueId,
-  state: s,
-  action,
-  t,
-  mode,
-  onClose,
-}: {
-  issueId: string;
-  state: State;
-  action: Action;
-  t: T;
-  mode: string;
-  onClose: () => void;
-}) {
-  const [title, setTitle] = useState(""),
-    [body, setBody] = useState(""),
-    [kind, setKind] = useState("report"),
-    [actionText, setAction] = useState(""),
-    [refs, setRefs] = useState<string[]>([]),
-    [bindingId, setBinding] = useState(""),
-    [scope, setScope] = useState("issue"),
-    [deps, setDeps] = useState<string[]>([]),
-    [old, setOld] = useState(""),
-    [oldRequest, setOldRequest] = useState(""),
-    [pending, setPending] = useState(false);
-  const tasks = s.tasks.filter(
-    (x) => x.issueId === issueId && !["done", "cancelled"].includes(x.status),
-  );
-  const fields = mode === "Publish artifact";
-  const isTask = mode === "Submit task";
-  const approval = mode === "Request approval";
-  return (
-    <Modal title={t(mode)} onClose={onClose}>
-      <div className="space-y-4">
-        {!isTask && (
-          <Field
-            label={t(
-              approval || mode === "Request human input" ? "Question" : "Title",
-            )}
-          >
-            <input
-              className="field"
-              autoFocus
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-            />
-          </Field>
-        )}
-        <Field label={t(isTask ? "Task description" : "Content")}>
-          <textarea
-            className="field min-h-32"
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-          />
-        </Field>
-        {fields && (
-          <>
-            <Field label={t("Kind")}>
-              <select
-                className="field"
-                value={kind}
-                onChange={(e) => setKind(e.target.value)}
-              >
-                {["report", "spec", "contract", "code", "test"].map((x) => (
-                  <option key={x}>{x}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label={t("Supersedes")}>
-              <select
-                className="field"
-                value={old}
-                onChange={(e) => setOld(e.target.value)}
-              >
-                <option value="">—</option>
-                {s.artifacts
-                  .filter((a) => a.issueId === issueId)
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.title} · {a.version.slice(0, 10)}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-          </>
-        )}
-        {isTask && (
-          <>
-            <Field label={t("Assignments")}>
-              <select
-                className="field"
-                value={bindingId}
-                onChange={(e) => setBinding(e.target.value)}
-              >
-                <option value="">{t("Automatic routing")}</option>
-                {s.bindings
-                  .filter((b) => b.issueId === issueId && !b.removed)
-                  .map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {s.agents.find((a) => a.id === b.agentId)?.name} ·{" "}
-                      {s.worktrees.find((w) => w.id === b.worktreeId)?.name} ·{" "}
-                      {b.description}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-            <Field label={t("Dependencies")}>
-              <div className="space-y-2">
-                {[
-                  ...tasks,
-                  ...s.requests.filter((r) => r.issueId === issueId),
-                ].map((x) => (
-                  <label key={x.id} className="flex gap-2 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={deps.includes(x.id)}
-                      onChange={(e) =>
-                        setDeps(
-                          e.target.checked
-                            ? [...deps, x.id]
-                            : deps.filter((k) => k !== x.id),
-                        )
-                      }
-                    />
-                    {"text" in x ? x.text : x.title}
-                  </label>
-                ))}
-              </div>
-            </Field>
-          </>
-        )}
-        {!fields && !isTask && (
-          <>
-            <Field label={t("Supersedes request")}>
-              <select
-                className="field"
-                value={oldRequest}
-                onChange={(e) => setOldRequest(e.target.value)}
-              >
-                <option value="">—</option>
-                {s.requests
-                  .filter(
-                    (r) =>
-                      r.issueId === issueId &&
-                      !r.supersededById &&
-                      r.kind === (approval ? "approval" : "input"),
-                  )
-                  .map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.title} · {t(r.status)}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-            <Field label={t("Scope")}>
-              <select
-                className="field"
-                value={scope}
-                onChange={(e) => setScope(e.target.value)}
-              >
-                <option value="issue">{t("Whole issue")}</option>
-                {tasks.map((x) => (
-                  <option key={x.id} value={x.id}>
-                    {x.text}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {approval && (
-              <>
-                <Field label={t("Action after approval")}>
-                  <input
-                    className="field"
-                    value={actionText}
-                    onChange={(e) => setAction(e.target.value)}
-                  />
-                </Field>
-                <Field label={t("Frozen materials")}>
-                  <div className="space-y-2">
-                    {s.artifacts
-                      .filter((a) => a.issueId === issueId)
-                      .map((a) => (
-                        <label key={a.id} className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={refs.includes(a.id)}
-                            onChange={(e) =>
-                              setRefs(
-                                e.target.checked
-                                  ? [...refs, a.id]
-                                  : refs.filter((x) => x !== a.id),
-                              )
-                            }
-                          />
-                          {a.title} · {a.version.slice(0, 8)}
-                        </label>
-                      ))}
-                  </div>
-                </Field>
-              </>
-            )}
-          </>
-        )}
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>{t("Cancel")}</Button>
-          <Button
-            variant="primary"
-            disabled={
-              pending ||
-              !body.trim() ||
-              (!isTask && !title.trim()) ||
-              (approval && (!refs.length || !actionText.trim()))
-            }
-            onClick={() => {
-              setPending(true);
-              const type = fields
-                ? "artifact.publish"
-                : isTask
-                  ? "task.create"
-                  : "request.create";
-              const payload = fields
-                ? {
-                    issueId,
-                    title,
-                    content: body,
-                    kind,
-                    supersedesId: old || undefined,
-                  }
-                : isTask
-                  ? {
-                      issueId,
-                      text: body,
-                      bindingId: bindingId || undefined,
-                      dependencyIds: deps,
-                    }
-                  : {
-                      issueId,
-                      title,
-                      body,
-                      kind: approval ? "approval" : "input",
-                      scope: scope === "issue" ? "issue" : [scope],
-                      action: actionText,
-                      artifactIds: refs,
-                      supersedesId: oldRequest || undefined,
-                    };
-              void action(type, payload)
-                .then(onClose)
-                .catch(() => {})
-                .finally(() => setPending(false));
-            }}
-          >
-            {t(mode)}
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
 export function IssueDetail({
   issue: i,
   state: s,
@@ -703,7 +443,6 @@ export function IssueDetail({
 }) {
   const [comment, setComment] = useDraft(`comment:${i.id}`);
   const [binding, setBinding] = useState<Binding | "new">(),
-    [mode, setMode] = useState(""),
     [menu, setMenu] = useState(false),
     [control, setControl] = useState(""),
     [controlText, setControlText] = useState("");
@@ -802,28 +541,6 @@ export function IssueDetail({
                 {a.name}
               </a>
             ))}
-          <div className="mt-8 flex flex-wrap gap-2">
-            {[
-              "Submit task",
-              "Publish artifact",
-              "Request approval",
-              "Request human input",
-            ].map((m) => (
-              <Button
-                key={m}
-                variant="outline"
-                disabled={i.status === "Done"}
-                onClick={() => setMode(m)}
-              >
-                {m === "Request approval" ? (
-                  <ShieldCheck size={12} />
-                ) : (
-                  <Plus size={12} />
-                )}{" "}
-                {t(m)}
-              </Button>
-            ))}
-          </div>
           <div className="mt-8 border-t border-border pt-5">
             <h2 className="mb-4 font-semibold">{t("Activity")}</h2>
             <div className="timeline space-y-4">
@@ -1192,16 +909,6 @@ export function IssueDetail({
           action={action}
           t={t}
           onClose={() => setBinding(undefined)}
-        />
-      )}{" "}
-      {mode && (
-        <Composer
-          issueId={i.id}
-          state={s}
-          action={action}
-          t={t}
-          mode={mode}
-          onClose={() => setMode("")}
         />
       )}
       {control && (
