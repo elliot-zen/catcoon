@@ -176,6 +176,10 @@ export const zh: Record<string, string> = {
 export type T = (s: string) => string;
 
 export const eventNames: Record<string, string> = {
+  "attachment.created": "attached a file",
+  "session.running": "started a native terminal turn",
+  "session.completed": "finished a native terminal turn",
+  "request.external": "resolved the native request in the terminal",
   "issue.created": "created the issue",
   "issue.updated": "updated the issue",
   "issue.start": "started automatic progress",
@@ -199,6 +203,7 @@ export const eventNames: Record<string, string> = {
   "request.superseded": "replaced the request",
   "request.escalated": "requested Human input",
   "run.stopping": "is stopping execution",
+  "run.attached": "reconnected to the native execution",
   "run.started": "started execution",
   "run.scheduled": "scheduled execution",
   "run.completed": "finished execution",
@@ -237,6 +242,10 @@ Object.assign(zh, {
   contract: "接口契约",
   code: "代码",
   test: "测试",
+  "attachment.created": "添加了附件",
+  "session.running": "启动了终端会话执行",
+  "session.completed": "结束了终端会话执行",
+  "request.external": "在终端处理了原生请求",
   "issue.created": "创建了需求",
   "issue.updated": "更新了需求",
   "issue.start": "开始自动推进",
@@ -260,6 +269,7 @@ Object.assign(zh, {
   "request.superseded": "替代了旧请求",
   "request.escalated": "请求人工答复",
   "run.stopping": "正在停止执行",
+  "run.attached": "重新连接了原生执行",
   "run.started": "开始执行",
   "run.scheduled": "安排了执行",
   "run.completed": "结束了执行",

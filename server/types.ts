@@ -11,6 +11,8 @@ export interface Issue {
   paused: boolean;
   revision: number;
   runBudgetStart?: number;
+  priority?: number;
+  labels?: string[];
 }
 export interface Project {
   id: string;
@@ -79,6 +81,9 @@ export interface Run {
   context: string;
   status: string;
   pid?: number;
+  sessionId?: string;
+  nativeTurnId?: string;
+  stopRequested?: boolean;
   startedAt: string;
   finishedAt?: string;
   result?: string;
@@ -133,6 +138,13 @@ export interface Request {
   routeTask?: boolean;
   supersedesId?: string;
   supersededById?: string;
+  native?: {
+    sessionId: string;
+    rpcId: string | number;
+    method: string;
+    params: any;
+    delivery?: string;
+  };
 }
 export interface Notification {
   id: string;
@@ -157,8 +169,23 @@ export interface Attachment {
   content: string;
   createdAt: string;
 }
+export interface Session {
+  id: string;
+  bindingId: string;
+  agentId: string;
+  path: string;
+  threadId?: string;
+  sessionFile?: string;
+  endpoint?: string;
+  version: string;
+  busyTurnId?: string;
+  status: string;
+  createdAt: string;
+}
 export interface State {
   schemaVersion: number;
+  sessions: Session[];
+  labelCatalog: { name: string; color: string }[];
   revision: number;
   nextIssue: number;
   issues: Issue[];

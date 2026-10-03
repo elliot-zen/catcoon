@@ -62,12 +62,7 @@ body {
   background: var(--color-background);
   color: var(--color-foreground);
   font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
   -webkit-font-smoothing: antialiased;
 }
@@ -99,105 +94,4 @@ button:disabled {
   border-radius: 999px;
   background: #d4d4d8;
   background-clip: padding-box;
-}
-@layer components {
-  input,
-  select,
-  textarea {
-    font: inherit;
-    color: inherit;
-  }
-  input,
-  select {
-    min-width: 0;
-  }
-  select option {
-    background: var(--color-card);
-  }
-  button:disabled {
-    opacity: 0.45;
-  }
-  button:focus-visible,
-  a:focus-visible {
-    outline: 2px solid #a78bfa;
-    outline-offset: 2px;
-  }
-  pre {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  input[type="checkbox"] {
-    accent-color: #7c3aed;
-  }
-  summary {
-    cursor: pointer;
-  }
-  body {
-    font-size: 13px;
-  }
-  .field {
-    width: 100%;
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background: var(--color-background);
-    padding: 9px 11px;
-    outline: none;
-  }
-  .field:focus {
-    border-color: #a78bfa;
-  }
-  .muted {
-    color: var(--color-muted-foreground);
-  }
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    border-radius: 5px;
-    padding: 6px 10px;
-    font-size: 12px;
-    color: var(--color-muted-foreground);
-  }
-  .btn:hover {
-    background: var(--color-muted);
-    color: var(--color-foreground);
-  }
-  .btn.outline {
-    border: 1px solid var(--color-border);
-    color: var(--color-foreground);
-  }
-  .btn.primary {
-    background: var(--color-foreground);
-    color: var(--color-background);
-  }
-  .btn.primary:hover {
-    opacity: 0.85;
-  }
-  .btn.danger {
-    color: #e11d48;
-  }
-  .empty {
-    padding: 60px 20px;
-    text-align: center;
-    color: var(--color-muted-foreground);
-  }
-  .badge {
-    border-radius: 4px;
-    background: var(--color-muted);
-    padding: 2px 6px;
-    font-size: 11px;
-  }
-  .timeline {
-    position: relative;
-  }
-  .timeline:before {
-    content: "";
-    position: absolute;
-    left: 11px;
-    top: 12px;
-    bottom: 12px;
-    width: 1px;
-    background: var(--color-border);
-  }
 }

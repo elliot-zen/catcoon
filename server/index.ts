@@ -172,7 +172,12 @@ export function createApp(
                 result = store.change((s) => s.agents, key, fp);
               }
             }
-          } else result = domain.action(body.type, p, key);
+          } else if (
+            body.type === "request.decide" &&
+            store.read().requests.find((q) => q.id === p.requestId)?.native
+          )
+            result = await runtime.decideNative(p, key);
+          else result = domain.action(body.type, p, key);
         } else fail(404, "NOT_FOUND", "Endpoint not found");
       } finally {
         release();

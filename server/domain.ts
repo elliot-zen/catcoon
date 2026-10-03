@@ -129,6 +129,7 @@ export function artifact(
           r.scope.includes(work.id)
         ) {
           run.status = "stopping";
+          run.stopRequested = true;
           run.reason =
             "Execution basis replaced; stop and verify existing results before continuing";
           event(s, p.issueId, "System", "run.stopping", run.reason, {
@@ -257,6 +258,7 @@ export function dependencies(s: State, t: Task) {
     !s.requests.some(
       (r) =>
         r.issueId === t.issueId &&
+        (!r.native || r.status === "Pending") &&
         !r.supersededById &&
         r.id !== t.sourceId &&
         ["Pending", "Changes requested", "Superseded", "Cancelled"].includes(
@@ -279,9 +281,15 @@ export function finalReady(s: State, issueId: string, exclude?: string) {
       (t) => t.issueId === issueId && !["done", "cancelled"].includes(t.status),
     ) ||
     s.runs.some((r) => r.issueId === issueId && activeRun(r)) ||
+    s.sessions.some(
+      (x) =>
+        x.busyTurnId &&
+        s.bindings.some((b) => b.id === x.bindingId && b.issueId === issueId),
+    ) ||
     s.requests.some(
       (r) =>
         r.issueId === issueId &&
+        (!r.native || r.status === "Pending") &&
         r.id !== exclude &&
         ["Pending", "Changes requested", "Superseded", "Cancelled"].includes(
           r.status,
@@ -364,7 +372,12 @@ export class Domain {
       if (
         p[field] !== undefined &&
         (typeof p[field] !== "string" ||
-          p[field].length > (field === "content" ? 1000000 : 100000))
+          p[field].length >
+            (field === "content"
+              ? type === "attachment.create"
+                ? 7 * 1024 * 1024
+                : 1000000
+              : 100000))
       )
         fail(
           400,
@@ -413,6 +426,8 @@ export class Domain {
           started: false,
           paused: false,
           revision: 0,
+          priority: 0,
+          labels: [],
         };
         s.issues.push(i);
         for (const a of p.attachments || []) {
@@ -440,11 +455,51 @@ export class Domain {
         const i = find(s.issues, p.issueId);
         if (i.revision !== p.revision)
           fail(409, "STALE_VERSION", "Issue changed");
-        i.title = text(p.title, "Title", 500);
-        i.description = p.description || "";
+        if (p.title !== undefined) i.title = text(p.title, "Title", 500);
+        if (p.description !== undefined) i.description = p.description;
+        if (p.priority !== undefined) {
+          if (!Number.isInteger(p.priority) || p.priority < 0 || p.priority > 4)
+            fail(400, "INVALID_INPUT", "Invalid priority");
+          i.priority = p.priority;
+        }
+        if (p.labels !== undefined) {
+          if (!Array.isArray(p.labels) || p.labels.length > 50)
+            fail(400, "INVALID_INPUT", "Invalid labels");
+          i.labels = [
+            ...new Set<string>(
+              p.labels.map((x: unknown) => text(x, "Label", 100)),
+            ),
+          ];
+          for (const name of i.labels)
+            if (!s.labelCatalog.some((l) => l.name === name))
+              s.labelCatalog.push({ name, color: "bg-emerald-500" });
+        }
         event(s, i.id, "Human", "issue.updated", i.title);
         wake(s, i.id);
         return i;
+      }
+      case "attachment.create": {
+        find(s.issues, p.issueId);
+        if (
+          typeof p.content !== "string" ||
+          !/^[-\w+/]*={0,2}$/.test(p.content) ||
+          Buffer.from(p.content, "base64").length > 5 * 1024 * 1024
+        )
+          fail(400, "INVALID_INPUT", "Invalid attachment / maximum 5MB");
+        const a = {
+          id: id(),
+          issueId: p.issueId,
+          name: text(p.name, "Attachment name", 500),
+          mime:
+            typeof p.mime === "string" ? p.mime : "application/octet-stream",
+          content: p.content,
+          createdAt: now(),
+        };
+        s.attachments.push(a);
+        event(s, p.issueId, "Human", "attachment.created", a.name, {
+          data: { attachmentId: a.id },
+        });
+        return a;
       }
       case "comment.create": {
         find(s.issues, p.issueId);
@@ -683,8 +738,10 @@ export class Domain {
               (r) =>
                 r.issueId === i.id &&
                 ["starting", "running"].includes(r.status),
-            ))
+            )) {
               r.status = "stopping";
+              r.stopRequested = true;
+            }
             task(s, i.id, p.text, { sourceId: i.id });
             break;
           case "reopen":
@@ -755,6 +812,8 @@ export class Domain {
             fail(400, "INVALID_INPUT", "Input requires an answer");
           if (p.decision === "answer") {
             r.answer = text(p.answer, "Answer");
+            r.answer =
+              r.options?.find((o) => o.label === r.answer)?.value || r.answer;
             if (
               r.options?.length &&
               !r.options.some((o) => o.value === r.answer)
@@ -786,9 +845,10 @@ export class Domain {
           } else if (p.decision === "changes") {
             r.answer = text(p.answer, "Changes requested");
             r.status = "Changes requested";
-            task(s, r.issueId, `Revise proposal: ${r.title}\n${r.answer}`, {
-              sourceId: r.id,
-            });
+            if (!r.native)
+              task(s, r.issueId, `Revise proposal: ${r.title}\n${r.answer}`, {
+                sourceId: r.id,
+              });
           }
         }
         if (p.decision === "cancel") {
@@ -837,6 +897,19 @@ export class Domain {
           content: r.result,
         });
         r.finishedAt = now();
+        if (r.sessionId) {
+          const x = find(s.sessions, r.sessionId);
+          if (x.busyTurnId === r.nativeTurnId) {
+            x.busyTurnId = undefined;
+            x.status = "idle";
+          }
+        }
+        for (const q of s.requests.filter(
+          (q) => q.native && q.taskId === r.taskId && q.status === "Pending",
+        )) {
+          q.status = "Cancelled";
+          q.revision++;
+        }
         const t = find(s.tasks, r.taskId);
         t.status = p.outcome === "completed" ? "done" : "waiting";
         t.reason = "Execution failed or stopped; explicit retry required";
@@ -854,6 +927,7 @@ export class Domain {
     this.store.change((s) => {
       for (const r of s.runs.filter(activeRun)) {
         if (r.status === "unknown") continue;
+        if (r.status === "stopping") r.stopRequested = true;
         r.status = "unknown";
         r.reason =
           "Service restarted; verify process and worktree before retry";

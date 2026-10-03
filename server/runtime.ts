@@ -1,6 +1,8 @@
-import { spawn, execFileSync } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
-import { Store, id, now, find, fail } from "./store.ts";
+import { execFileSync } from "node:child_process";
+import { Codex } from "./agents/codex.ts";
+import { Pi } from "./agents/pi.ts";
+import { join, resolve } from "node:path";
+import { Store, id, now, find, fail, hash } from "./store.ts";
 import {
   Domain,
   task,
@@ -14,7 +16,7 @@ import {
 import { validateWorktree, readSpec, repository } from "./files.ts";
 import { evaluate } from "./jev.ts";
 import { activeRun } from "./types.ts";
-import type { State, Task, Binding, Run, Request } from "./types.ts";
+import type { State, Task, Binding, Run, Request, Session } from "./types.ts";
 const reportContract = `Advance the Issue within your assigned scope. When work remains, include concrete follow-up tasks for Triage to route using the binding descriptions, together with any required approval or clarification requests. The user should not need to manually create the next task, publish your artifacts, or create your requests. Return a final fenced JSON object: {"summary":"...","artifacts":[{"supersedesId":"optional old artifact ID", "kind":"spec|contract|code|test|report","title":"...","content":"complete inspectable content / evidence"}],"tasks":[{"text":"next concrete work","bindingId":"optional current binding ID","dependencyIds":[]}],"requests":[{"supersedesId":"optional old request ID", "kind":"input|approval","title":"question","body":"context","artifactIndexes":[0],"action":"scope of requested authorization","scope":"issue or task ID array","routeToAgent":false}],"answer":{"requestId":"only for assigned clarification task","text":"answer"}}. Do not claim testing passed without actual evidence. Approval requires frozen artifacts and explicit action; humans alone decide. If requesting input, stop the blocked work. All continued work subject to approval must be represented as a task that depends on the request. No merge, deployment or arbitrary external writes without explicit scoped authorization. Write only in the assigned worktree. Descriptions are routing hints, not authority. Do not invent requirements. Never output private reasoning or secrets.`;
 export function parseReport(content: string) {
   const matches = [...content.matchAll(/```(?:json)?\s*\n?([\s\S]*?)```/g)];
@@ -33,7 +35,16 @@ export function parseReport(content: string) {
 export class Runtime {
   store: Store;
   domain: Domain;
-  running = new Map<string, ChildProcess>();
+  running = new Map<string, { interrupt: () => Promise<any> }>();
+  codex?: Codex;
+  loadedThreads = new Set<string>();
+  finalMessages = new Map<string, string>();
+  nativeItems = new Map<string, any>();
+  pendingNative = new Set<string>();
+  pis = new Map<string, Pi>();
+  timers = new Map<string, ReturnType<typeof setTimeout>>();
+  recovered = false;
+  nativeStarting = new Map<string, string>();
   inflight = new Set<string>();
   closing = false;
   fetcher: typeof fetch;
@@ -227,23 +238,15 @@ export class Runtime {
   }
   async tick() {
     if (this.closing) return;
-    for (const [runId, child] of this.running) {
+    if (!this.recovered) {
+      this.recovered = true;
+      await this.recoverNative();
+    }
+    for (const [runId, control] of this.running) {
       const r = this.store.read().runs.find((x) => x.id === runId);
-      if (r?.status === "stopping" && !child.killed) {
-        try {
-          process.kill(-child.pid!, "SIGTERM");
-        } catch {
-          child.kill("SIGTERM");
-        }
-        setTimeout(() => {
-          if (this.running.has(runId)) {
-            try {
-              process.kill(-child.pid!, "SIGKILL");
-            } catch {
-              child.kill("SIGKILL");
-            }
-          }
-        }, 5000).unref();
+      if (r?.status === "stopping") {
+        this.running.delete(runId);
+        void control.interrupt().catch((e) => this.unknown(runId, String(e)));
       }
     }
     const s = this.store.read();
@@ -253,7 +256,12 @@ export class Runtime {
         i.paused ||
         i.status === "Done" ||
         this.inflight.has(i.id) ||
-        s.runs.some((r) => r.issueId === i.id && activeRun(r))
+        s.runs.some((r) => r.issueId === i.id && activeRun(r)) ||
+        s.sessions.some(
+          (x) =>
+            x.busyTurnId &&
+            s.bindings.some((b) => b.id === x.bindingId && b.issueId === i.id),
+        )
       )
         continue;
       const t = s.tasks.find(
@@ -437,7 +445,8 @@ export class Runtime {
         a = find(s.agents, b.agentId);
       if (b.removed) fail(409, "STALE_VERSION", "Binding removed");
       if (a.status !== "available") fail(503, "AGENT_UNAVAILABLE", a.reason);
-      const context = this.context(s, t, b);
+      if (a.command === "codex") await this.prepareCodex(b.id, w.path);
+      const context = this.context(this.store.read(), t, b);
       const r = this.begin(taskId, b.id, context, b.revision);
       if (r) this.launch(r);
     } catch (e) {
@@ -481,7 +490,12 @@ export class Runtime {
         b.revision !== revision ||
         !["pending", "waiting"].includes(t.status) ||
         !dependencies(s, t) ||
-        s.runs.some((r) => r.issueId === i.id && activeRun(r))
+        s.runs.some((r) => r.issueId === i.id && activeRun(r)) ||
+        s.sessions.some(
+          (x) =>
+            x.busyTurnId &&
+            s.bindings.some((b) => b.id === x.bindingId && b.issueId === i.id),
+        )
       )
         return;
       validateWorktree(w, p);
@@ -528,167 +542,759 @@ export class Runtime {
       return r;
     });
   }
-  launch(r: Run) {
-    const args =
-      r.snapshot.command === "codex"
-        ? [
-            "exec",
-            "--json",
-            "--sandbox",
-            "workspace-write",
-            "-C",
-            r.snapshot.path,
-            "-",
-          ]
-        : ["--mode", "json", "--print", "--no-session", "--", r.context];
-    const env = { ...process.env };
-    delete env.TYPESAFE_API_KEY;
-    const child = spawn(r.snapshot.command, args, {
-      cwd: r.snapshot.path,
-      env,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
+  session(bindingId: string, agentId: string, path: string): Session {
+    const old = this.store
+      .read()
+      .sessions.find(
+        (x) =>
+          x.bindingId === bindingId && x.agentId === agentId && x.path === path,
+      );
+    if (old) return old;
+    return this.store.change((s) => {
+      const x: Session = {
+        id: id(),
+        bindingId,
+        agentId,
+        path,
+        version: find(s.agents, agentId).version,
+        status: "idle",
+        createdAt: now(),
+      };
+      if (agentId === "pi")
+        x.sessionFile = join(resolve(this.store.dir), "pi", x.id + ".jsonl");
+      s.sessions.push(x);
+      return x;
     });
-    this.running.set(r.id, child);
-    let buffer = "",
-      final = "",
-      stderr = "",
-      failed = false;
-    const timeout = setTimeout(() => {
-      this.store.change((s) => {
-        const run = find(s.runs, r.id);
-        if (["starting", "running"].includes(run.status)) {
-          run.status = "stopping";
-          run.reason = "30 minute execution limit";
-          event(s, r.issueId, "System", "run.timeout", run.reason, {
-            runId: r.id,
-          });
-        }
+  }
+  async codexClient() {
+    if (!this.codex) {
+      const c = (this.codex = new Codex(this.store.dir));
+      c.on("message", (m) => {
+        if (!this.closing) this.codexMessage(m);
       });
-      void this.tick();
-    }, 30 * 60000);
+      c.on("disconnect", (reason) => {
+        this.loadedThreads.clear();
+        this.pendingNative.clear();
+        if (!this.closing)
+          for (const r of this.store
+            .read()
+            .runs.filter(
+              (r) =>
+                r.snapshot.command === "codex" &&
+                ["starting", "running", "stopping"].includes(r.status),
+            ))
+            this.unknown(r.id, reason);
+      });
+    }
+    await this.codex.connect();
+    if (this.closing) throw new Error("Relay stopped");
+    return this.codex;
+  }
+  async prepareCodex(bindingId: string, path: string) {
+    const c = await this.codexClient();
+    const x = this.session(bindingId, "codex", path);
+    let thread: any;
+    if (x.threadId) {
+      if (
+        this.loadedThreads.has(x.threadId) &&
+        !this.store
+          .read()
+          .runs.some((r) => r.sessionId === x.id && r.nativeTurnId)
+      )
+        thread = { id: x.threadId, status: { type: "idle" } };
+      else
+        thread = (
+          await c.call(
+            this.loadedThreads.has(x.threadId)
+              ? "thread/read"
+              : "thread/resume",
+            { threadId: x.threadId, cwd: path, includeTurns: true },
+          )
+        ).thread;
+    } else {
+      thread = (
+        await c.call("thread/start", {
+          cwd: path,
+          sandbox: "workspace-write",
+          approvalPolicy: "on-request",
+          ephemeral: false,
+        })
+      ).thread;
+      if (this.closing) throw new Error("Relay stopped");
+      this.store.change((s) =>
+        Object.assign(find(s.sessions, x.id), {
+          threadId: thread.id,
+          endpoint: c.endpoint,
+          status: "idle",
+        }),
+      );
+    }
+    if (this.closing) throw new Error("Relay stopped");
+    this.loadedThreads.add(thread.id);
+    this.store.change((s) => {
+      find(s.sessions, x.id).endpoint = c.endpoint;
+    });
+    const active = thread.turns?.find((t: any) => t.status === "inProgress");
+    if (
+      thread.status?.type === "active" ||
+      active ||
+      this.store.read().sessions.find((a) => a.id === x.id)?.busyTurnId
+    ) {
+      if (active) this.externalTurn(x.id, active.id);
+      fail(
+        409,
+        "WORKTREE_BUSY",
+        "Worktree is busy / locked by native terminal session",
+      );
+    }
+    return find(this.store.read().sessions, x.id);
+  }
+  armTimeout(r: Run) {
+    clearTimeout(this.timers.get(r.id));
+    const timeout = setTimeout(
+      () => {
+        if (this.closing) return;
+        this.store.change((s) => {
+          const run = find(s.runs, r.id);
+          if (["starting", "running"].includes(run.status)) {
+            run.status = "stopping";
+            run.stopRequested = true;
+            run.reason = "30 minute execution limit";
+          }
+        });
+        void this.tick();
+      },
+      Math.max(0, 30 * 60000 - (Date.now() - new Date(r.startedAt).getTime())),
+    );
     timeout.unref();
-    child.on("spawn", () =>
+    this.timers.set(r.id, timeout);
+  }
+  launch(r: Run) {
+    void this.launchNative(r).catch((e) => {
+      if (!this.closing) this.unknown(r.id, this.store.redact(String(e)));
+    });
+  }
+  async launchNative(r: Run) {
+    const x = this.session(r.bindingId, r.snapshot.command, r.snapshot.path);
+    this.store.change((s) => {
+      find(s.runs, r.id).sessionId = x.id;
+    });
+    this.armTimeout(r);
+    if (r.snapshot.command === "codex") {
+      const c = await this.codexClient();
+      const ready = await this.prepareCodex(r.bindingId, r.snapshot.path);
+      this.nativeStarting.set(ready.threadId!, r.id);
+      try {
+        const { turn } = await c.call("turn/start", {
+          threadId: ready.threadId,
+          clientUserMessageId: r.id,
+          input: [{ type: "text", text: r.context }],
+        });
+        this.started(r.id, x.id, turn.id, c.child?.pid);
+        if (turn.status !== "inProgress") this.turnResult(r.id, turn);
+      } finally {
+        this.nativeStarting.delete(ready.threadId!);
+      }
+      if (
+        ["starting", "running", "stopping"].includes(
+          find(this.store.read().runs, r.id).status,
+        )
+      )
+        this.running.set(r.id, {
+          interrupt: () =>
+            c.call("turn/interrupt", {
+              threadId: ready.threadId,
+              turnId: find(this.store.read().runs, r.id).nativeTurnId,
+            }),
+        });
+    } else {
+      if (!/^1\./.test(x.version) && x.version !== "test")
+        throw new Error(
+          "Pi 1.0.0 RPC required; installed version: " + x.version,
+        );
+      const pi = new Pi(x.sessionFile!, x.path);
+      this.pis.set(x.id, pi);
+      let final = "",
+        stopReason = "",
+        failure = "";
+      pi.on("message", (m) => {
+        if (this.closing) return;
+        if (m.type === "message_end" && m.message?.role === "assistant") {
+          final = (m.message.content || [])
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text)
+            .join("\n");
+          stopReason = m.message.stopReason || "";
+          failure = m.message.errorMessage || "";
+        }
+        if (m.type === "extension_ui_request")
+          this.nativeRequest(r.id, x.id, m.id, "pi/" + m.method, m);
+        else if (m.type === "agent_settled") {
+          this.nativeFinished(r.id, x.id);
+          this.complete(
+            r.id,
+            !failure && !["error", "aborted"].includes(stopReason),
+            final,
+            failure,
+          );
+          pi.shutdown();
+          this.pis.delete(x.id);
+        } else if (
+          [
+            "tool_execution_start",
+            "tool_execution_end",
+            "message_end",
+            "agent_end",
+            "auto_retry_start",
+            "auto_retry_end",
+            "auto_compaction_start",
+            "auto_compaction_end",
+          ].includes(m.type)
+        )
+          this.step(r, m.type, m);
+      });
+      pi.on("disconnect", (reason) => {
+        if (this.closing) return;
+        for (const q of this.store
+          .read()
+          .requests.filter((q) => q.native?.sessionId === x.id))
+          this.pendingNative.delete(q.id);
+        if (!this.closing) this.unknown(r.id, reason);
+      });
+      const state = await pi.call("get_state");
       this.store.change((s) => {
-        const run = find(s.runs, r.id);
-        run.pid = child.pid;
-        if (run.status !== "stopping") run.status = "running";
+        find(s.sessions, x.id).sessionFile = state.sessionFile || x.sessionFile;
+      });
+      this.started(r.id, x.id, id(), pi.child.pid);
+      this.running.set(r.id, { interrupt: () => pi.interrupt() });
+      await pi.call("prompt", { message: r.context });
+    }
+  }
+  started(runId: string, sessionId: string, turnId: string, pid?: number) {
+    if (this.closing) return;
+    this.store.change((s) => {
+      const r = find(s.runs, runId);
+      if (!["starting", "running", "stopping", "unknown"].includes(r.status))
+        return;
+      const duplicate = r.nativeTurnId === turnId;
+      const reattached = r.status === "unknown";
+      r.nativeTurnId = turnId;
+      if (pid !== undefined) r.pid = pid;
+      r.sessionId = sessionId;
+      if (r.stopRequested) r.status = "stopping";
+      else if (r.status !== "stopping") r.status = "running";
+      find(s.tasks, r.taskId).status = "running";
+      Object.assign(find(s.sessions, sessionId), {
+        busyTurnId: turnId,
+        status: "running",
+      });
+      if (!duplicate || reattached)
         event(
           s,
           r.issueId,
           r.snapshot.agentName,
-          "run.started",
-          `${r.snapshot.projectName} · ${r.snapshot.path}`,
-          { runId: r.id, taskId: r.taskId, bindingId: r.bindingId },
+          reattached ? "run.attached" : "run.started",
+          r.snapshot.path,
+          { runId, taskId: r.taskId, bindingId: r.bindingId },
         );
-      }),
+    });
+  }
+  step(r: Run, type: string, data: any) {
+    const output = this.store.redact(
+      JSON.stringify(data, (key, value) =>
+        /thinking|reasoning/i.test(key) ||
+        (value &&
+          typeof value === "object" &&
+          /thinking|reasoning/i.test(value.type || ""))
+          ? undefined
+          : value,
+      ),
     );
-    if (r.snapshot.command === "codex") child.stdin?.end(r.context);
-    else child.stdin?.end();
-    const line = (raw: string) => {
-      if (!raw.trim()) return;
-      try {
-        const x = JSON.parse(raw);
-        if (
-          /reasoning|thinking|delta/.test(x.type || "") ||
-          ["message_update", "message_start"].includes(x.type)
-        )
-          return;
-        const item = x.item || x.message || x;
-        const kind = item.type || x.type || "event";
-        if (/reasoning|thinking/.test(kind)) return;
-        if (item.type === "agent_message") final = item.text || final;
-        if (x.type === "message_end" && x.message?.role === "assistant") {
-          const content = x.message.content || [];
-          final =
-            content
-              .filter((c: any) => c.type === "text")
-              .map((c: any) => c.text)
-              .join("\n") || final;
-        }
-        if (x.type === "turn.failed" || x.type === "error") failed = true;
-        const reportedAt = x.timestamp || x.at;
-        const at =
-          reportedAt && !Number.isNaN(new Date(reportedAt).getTime())
-            ? new Date(reportedAt).toISOString()
-            : now();
-        const clean = this.store.redact(
-          JSON.stringify(x, (key, value) =>
-            key === "reasoning" ||
-            key === "thinking" ||
-            (value &&
-              typeof value === "object" &&
-              /thinking|reasoning/.test(value.type))
-              ? undefined
-              : value,
-          ),
+    this.store.change((s) =>
+      event(
+        s,
+        r.issueId,
+        r.snapshot.agentName,
+        "step",
+        data.command || data.name || type,
+        {
+          runId: r.id,
+          taskId: r.taskId,
+          bindingId: r.bindingId,
+          data: {
+            type,
+            output:
+              output.slice(0, 64000) +
+              (output.length > 64000
+                ? "\n[Truncated: event exceeds 64KB]"
+                : ""),
+          },
+        },
+      ),
+    );
+  }
+  externalTurn(sessionId: string, turnId: string) {
+    this.store.change((s) => {
+      const x = find(s.sessions, sessionId);
+      const b = find(s.bindings, x.bindingId);
+      const duplicate = x.busyTurnId === turnId && x.status === "running";
+      x.busyTurnId = turnId;
+      x.status = "running";
+      this.store.db
+        .prepare("INSERT OR IGNORE INTO locks VALUES(?,?)")
+        .run(x.path, "native:" + x.id);
+      if (!duplicate)
+        event(
+          s,
+          b.issueId,
+          "Terminal",
+          "session.running",
+          "Native terminal turn " + turnId,
+          { bindingId: b.id },
         );
-        this.store.change((s) => {
+    });
+  }
+  codexMessage(m: any) {
+    const p = m.params || {};
+    const x = this.store.read().sessions.find((x) => x.threadId === p.threadId);
+    if (!x) return;
+    let r = this.store
+      .read()
+      .runs.find(
+        (r) =>
+          r.sessionId === x.id &&
+          r.nativeTurnId === p.turnId &&
+          ["starting", "running", "stopping", "unknown"].includes(r.status),
+      );
+    const starting = this.nativeStarting.get(p.threadId);
+    if (!r && starting) {
+      this.started(starting, x.id, p.turnId || p.turn?.id);
+      r = find(this.store.read().runs, starting);
+    }
+    if (m.id !== undefined && m.method) {
+      if (r) {
+        const proposedItem = this.nativeItems.get(p.threadId + ":" + p.itemId);
+        this.nativeRequest(
+          r.id,
+          x.id,
+          m.id,
+          m.method,
+          proposedItem ? { ...p, proposedItem } : p,
+        );
+      }
+      return;
+    }
+    if (m.method === "item/started" && p.item?.type !== "reasoning") {
+      this.nativeItems.set(p.threadId + ":" + p.item.id, p.item);
+      if (r) this.step(r, p.item.type, p.item);
+    }
+    if (m.method === "turn/started") {
+      if (r) this.started(r.id, x.id, p.turn.id);
+      else this.externalTurn(x.id, p.turn.id);
+    }
+    if (m.method === "item/completed" && p.item?.type !== "reasoning") {
+      if (r) {
+        if (p.item.type === "agentMessage")
+          this.finalMessages.set(
+            p.turnId,
+            this.store.redact(p.item.text).slice(0, 256000),
+          );
+        this.step(r, p.item.type, p.item);
+      } else
+        this.store.change((s) =>
           event(
             s,
-            r.issueId,
-            r.snapshot.agentName,
+            find(s.bindings, x.bindingId).issueId,
+            "Terminal",
             "step",
-            item.command || item.name || kind,
+            p.item.type,
             {
-              at,
-              runId: r.id,
-              taskId: r.taskId,
-              bindingId: r.bindingId,
+              bindingId: x.bindingId,
               data: {
-                type: kind,
-                status: item.status || x.type,
-                exitCode: item.exit_code,
-                output:
-                  clean.length > 64000
-                    ? clean.slice(0, 64000) +
-                      "\n[Truncated: observable event exceeded 64KB; consult native tool output.]"
-                    : clean,
+                output: this.store
+                  .redact(JSON.stringify(p.item))
+                  .slice(0, 64000),
               },
             },
-          );
-        });
-      } catch {
+          ),
+        );
+    }
+    if (m.method === "turn/completed") {
+      r = this.store
+        .read()
+        .runs.find(
+          (a) =>
+            a.sessionId === x.id &&
+            a.nativeTurnId === p.turn.id &&
+            ["starting", "running", "stopping", "unknown"].includes(a.status),
+        );
+      if (r) this.turnResult(r.id, p.turn);
+      else
         this.store.change((s) => {
+          const a = find(s.sessions, x.id);
+          if (a.busyTurnId === p.turn.id) {
+            a.busyTurnId = undefined;
+            a.status = "idle";
+            this.store.db
+              .prepare("DELETE FROM locks WHERE run_id=?")
+              .run("native:" + x.id);
+          }
           event(
             s,
-            r.issueId,
-            r.snapshot.agentName,
-            "output",
-            this.store.redact(raw).slice(0, 64000) +
-              (raw.length > 64000
-                ? "\n[Truncated: observable output exceeded 64KB.]"
-                : ""),
-            { runId: r.id },
+            find(s.bindings, x.bindingId).issueId,
+            "Terminal",
+            "session.completed",
+            p.turn.status,
+            { bindingId: x.bindingId },
           );
         });
+    }
+    if (m.method === "serverRequest/resolved")
+      this.store.change((s) => {
+        for (const q of s.requests.filter(
+          (q) =>
+            q.native?.sessionId === x.id &&
+            q.native.rpcId === p.requestId &&
+            this.pendingNative.has(q.id),
+        )) {
+          this.pendingNative.delete(q.id);
+          if (q.status !== "Pending") {
+            q.native!.delivery = "confirmed";
+            continue;
+          }
+          q.status = "Resolved externally";
+          q.revision++;
+          event(s, q.issueId, "Terminal", "request.external", q.title, {
+            requestId: q.id,
+          });
+        }
+        recompute(s);
+      });
+  }
+  turnResult(runId: string, turn: any) {
+    const r = find(this.store.read().runs, runId);
+    if (r.status === "unknown")
+      this.store.change((s) => {
+        find(s.runs, runId).status = r.stopRequested ? "stopping" : "running";
+      });
+    this.nativeFinished(runId, r.sessionId!);
+    const text =
+      this.finalMessages.get(turn.id) ||
+      (turn.items || [])
+        .filter((i: any) => i.type === "agentMessage")
+        .map((i: any) => i.text)
+        .join("\n") ||
+      this.store
+        .read()
+        .events.filter(
+          (e) =>
+            e.runId === runId &&
+            e.type === "step" &&
+            (e.data as any)?.type === "agentMessage",
+        )
+        .map((e) => {
+          try {
+            return JSON.parse((e.data as any).output).text;
+          } catch {
+            return "";
+          }
+        })
+        .join("\n");
+    if (turn.status === "interrupted")
+      this.store.change((s) => {
+        find(s.runs, runId).status = "stopping";
+      });
+    this.finalMessages.delete(turn.id);
+    for (const item of turn.items || [])
+      this.nativeItems.delete(
+        (find(this.store.read().sessions, r.sessionId!).threadId || "") +
+          ":" +
+          item.id,
+      );
+    this.complete(
+      runId,
+      turn.status === "completed",
+      text,
+      turn.error?.message || "",
+    );
+  }
+  nativeFinished(runId: string, sessionId: string) {
+    clearTimeout(this.timers.get(runId));
+    this.timers.delete(runId);
+    this.running.delete(runId);
+    this.store.change((s) => {
+      const x = find(s.sessions, sessionId);
+      x.busyTurnId = undefined;
+      x.status = "idle";
+      for (const q of s.requests.filter(
+        (q) =>
+          q.native?.sessionId === sessionId &&
+          q.taskId === find(s.runs, runId).taskId &&
+          q.status === "Pending",
+      )) {
+        q.status = "Cancelled";
+        q.revision++;
+        this.pendingNative.delete(q.id);
       }
-    };
-    child.stdout?.on("data", (chunk) => {
-      buffer += chunk.toString();
-      let newline;
-      while ((newline = buffer.indexOf("\n")) >= 0) {
-        line(buffer.slice(0, newline));
-        buffer = buffer.slice(newline + 1);
+      recompute(s);
+    });
+  }
+  unknown(runId: string, reason: string) {
+    clearTimeout(this.timers.get(runId));
+    this.timers.delete(runId);
+    this.running.delete(runId);
+    this.store.change((s) => {
+      const r = find(s.runs, runId);
+      if (!["starting", "running", "stopping"].includes(r.status)) return;
+      if (r.status === "stopping") r.stopRequested = true;
+      r.status = "unknown";
+      r.reason = reason;
+      find(s.tasks, r.taskId).status = "unknown";
+      if (r.sessionId) find(s.sessions, r.sessionId).status = "unknown";
+      event(s, r.issueId, "System", "run.unknown", reason, { runId });
+    });
+  }
+  nativeRequest(
+    runId: string,
+    sessionId: string,
+    rpcId: string | number,
+    method: string,
+    params: any,
+  ) {
+    if (
+      method === "item/tool/requestUserInput" &&
+      params.questions?.some((q: any) => q.isSecret)
+    ) {
+      this.unknown(
+        runId,
+        "Secret input must be supplied in the local Codex terminal",
+      );
+      return;
+    }
+    const input =
+      method === "item/tool/requestUserInput" ||
+      /^pi\/(select|input|editor)$/.test(method);
+    const approval = /requestApproval$/.test(method) || method === "pi/confirm";
+    if (!input && !approval) {
+      if (method.startsWith("pi/")) return;
+      this.unknown(runId, "Unsupported blocking native request: " + method);
+      return;
+    }
+    const requestId = this.store.change((s) => {
+      const existing = s.requests.find(
+        (q) =>
+          q.native?.sessionId === sessionId &&
+          q.native.rpcId === rpcId &&
+          q.native.method === method &&
+          q.native.params.turnId === params.turnId &&
+          q.status === "Pending",
+      );
+      if (existing) return existing.id;
+      const r = find(s.runs, runId);
+      for (const q of s.requests.filter(
+        (q) =>
+          q.native?.sessionId === sessionId &&
+          q.native.method === method &&
+          params.itemId &&
+          q.native.params.itemId === params.itemId &&
+          q.taskId === r.taskId &&
+          q.status === "Pending",
+      )) {
+        q.status = "Superseded";
+        q.revision++;
+        for (const n of s.notifications.filter((n) => n.requestId === q.id))
+          n.archived = true;
       }
-      if (buffer.length > 1e6) {
-        line(buffer.slice(0, 64000));
-        buffer = "";
+      const material = artifact(s, {
+        issueId: r.issueId,
+        runId,
+        bindingId: r.bindingId,
+        kind: "report",
+        title: "Native tool request",
+        content: this.store.redact(JSON.stringify(params, null, 2)),
+      });
+      const q = makeRequest(s, {
+        issueId: r.issueId,
+        taskId: r.taskId,
+        kind: input ? "input" : "approval",
+        source: r.snapshot.agentName,
+        title: (params.title || params.reason || method).slice(0, 500),
+        body: this.store.redact(JSON.stringify(params, null, 2)),
+        scope: [r.taskId],
+        options:
+          method === "pi/select"
+            ? params.options.map((value: string) => ({ value, label: value }))
+            : undefined,
+        artifactIds: approval ? [material.id] : [],
+        action: approval ? method : "",
+      });
+      q.native = { sessionId, rpcId, method, params };
+      recompute(s);
+      return q.id;
+    });
+    this.pendingNative.add(requestId);
+  }
+
+  async decideNative(p: Record<string, any>, key: string) {
+    const q = find(this.store.read().requests, p.requestId);
+    const n = q.native!;
+    const cached = this.store.cached(
+      key,
+      hash(JSON.stringify({ type: "request.decide", p })),
+    );
+    if (cached !== undefined) return cached;
+    if (!this.pendingNative.has(q.id))
+      fail(
+        409,
+        "RESULT_UNKNOWN",
+        "Native request is not active on this connection; verify in the terminal",
+      );
+    const rpc = n.method.startsWith("pi/")
+      ? this.pis.get(n.sessionId)
+      : this.codex;
+    if (!rpc || (rpc instanceof Codex && rpc.socket?.readyState !== 1))
+      fail(
+        409,
+        "RESULT_UNKNOWN",
+        "Native session is disconnected; verify before deciding",
+      );
+    let response: any;
+    if (n.method === "item/tool/requestUserInput") {
+      const questions = n.params.questions || [];
+      let answers: any;
+      if (questions.length === 1)
+        answers = { [questions[0].id]: { answers: [p.answer] } };
+      else {
+        try {
+          answers = JSON.parse(p.answer);
+        } catch {
+          fail(
+            400,
+            "INVALID_INPUT",
+            "Answer each question as JSON keyed by question ID",
+          );
+        }
       }
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr = this.store.redact((stderr + chunk.toString()).slice(-64000));
-    });
-    child.on("error", (e) => {
-      stderr = this.store.redact(e.message);
-      failed = true;
-    });
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      this.running.delete(r.id);
-      if (buffer) line(buffer);
-      this.complete(r.id, code === 0 && !failed, final, stderr);
-    });
+      if (
+        !answers ||
+        typeof answers !== "object" ||
+        questions.some(
+          (question: any) =>
+            !Array.isArray(answers[question.id]?.answers) ||
+            answers[question.id].answers.length !== 1 ||
+            typeof answers[question.id].answers[0] !== "string" ||
+            !answers[question.id].answers[0].trim() ||
+            (question.options?.length &&
+              !question.isOther &&
+              !question.options.some(
+                (o: any) => o.label === answers[question.id].answers[0],
+              )),
+        )
+      )
+        fail(
+          400,
+          "INVALID_INPUT",
+          "Provide one answer for every native question",
+        );
+      response = { answers };
+    } else if (n.method.startsWith("pi/"))
+      response = {
+        type: "extension_ui_response",
+        id: n.rpcId,
+        ...(p.decision === "cancel"
+          ? { cancelled: true }
+          : n.method === "pi/confirm"
+            ? { confirmed: p.decision === "approve" }
+            : {
+                value:
+                  q.options?.find((o) => o.label === p.answer)?.value ||
+                  p.answer,
+              }),
+      };
+    else
+      response = { decision: p.decision === "approve" ? "accept" : "decline" };
+    const result = this.domain.action("request.decide", p, key);
+    const saved = find(this.store.read().requests, p.requestId);
+    if (["sent", "confirmed"].includes(saved.native?.delivery || ""))
+      return result;
+    try {
+      if (n.method.startsWith("pi/")) {
+        (rpc as Pi).child.stdin?.write(JSON.stringify(response) + "\n");
+      } else rpc!.send({ id: n.rpcId, result: response });
+      this.store.change((s) => {
+        find(s.requests, q.id).native!.delivery = "sent";
+      });
+    } catch {
+      this.store.change((s) => {
+        find(s.requests, q.id).native!.delivery = "unknown";
+      });
+      fail(
+        409,
+        "RESULT_UNKNOWN",
+        "Native decision delivery unknown; do not repeat tool execution",
+      );
+    }
+    return result;
+  }
+  async recoverNative() {
+    this.recovered = true;
+    const sessions = this.store
+      .read()
+      .sessions.filter((x) => x.agentId === "codex" && x.threadId);
+    if (!sessions.length) return;
+    try {
+      const c = await this.codexClient();
+      for (const x of sessions) {
+        try {
+          await c.call("thread/resume", { threadId: x.threadId, cwd: x.path });
+          const { thread } = await c.call("thread/read", {
+            threadId: x.threadId,
+            includeTurns: true,
+          });
+          const r = this.store
+            .read()
+            .runs.find(
+              (r) =>
+                r.sessionId === x.id &&
+                r.status === "unknown" &&
+                r.nativeTurnId,
+            );
+          if (r) {
+            const turn = thread.turns.find((t: any) => t.id === r.nativeTurnId);
+            if (turn?.status === "inProgress") {
+              this.started(r.id, x.id, turn.id);
+              this.armTimeout(r);
+              this.running.set(r.id, {
+                interrupt: () =>
+                  c.call("turn/interrupt", {
+                    threadId: x.threadId,
+                    turnId: turn.id,
+                  }),
+              });
+            } else if (turn) this.turnResult(r.id, turn);
+          } else {
+            const turn = thread.turns.find(
+              (t: any) => t.status === "inProgress",
+            );
+            if (turn) this.externalTurn(x.id, turn.id);
+            else
+              this.store.change((s) => {
+                Object.assign(find(s.sessions, x.id), {
+                  busyTurnId: undefined,
+                  status: "idle",
+                });
+                this.store.db
+                  .prepare("DELETE FROM locks WHERE run_id=?")
+                  .run("native:" + x.id);
+              });
+          }
+        } catch {
+          /* Missing rollout remains unknown; no replay or unlocking. */
+        }
+      }
+    } catch {
+      /* Local service unavailable: keep persistent unknown state. */
+    }
   }
   complete(runId: string, success: boolean, output: string, stderr: string) {
     output = this.store.redact(output);
@@ -929,13 +1535,19 @@ export class Runtime {
     );
   }
   shutdown() {
+    if (this.closing) return;
+    for (const r of this.store
+      .read()
+      .runs.filter((r) =>
+        ["starting", "running", "stopping"].includes(r.status),
+      ))
+      this.unknown(r.id, "Relay stopped; inspect native session before retry");
     this.closing = true;
-    for (const c of this.running.values()) {
-      try {
-        process.kill(-c.pid!, "SIGTERM");
-      } catch {
-        c.kill();
-      }
-    }
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    this.codex?.shutdown();
+    for (const pi of this.pis.values()) pi.shutdown();
+    this.pis.clear();
+    this.running.clear();
   }
 }

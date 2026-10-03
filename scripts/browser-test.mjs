@@ -1,8 +1,20 @@
 import { chromium, expect } from "@playwright/test";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, extname } from "node:path";
+import { createServer } from "node:http";
+import { build } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwind from "@tailwindcss/vite";
 import assert from "node:assert/strict";
 const dir = mkdtempSync(join(tmpdir(), "relay-browser-"));
 const repo = join(dir, "repo");
@@ -20,7 +32,7 @@ const server = spawn(process.execPath, ["server/index.ts"], {
 let logs = "";
 server.stdout.on("data", (x) => (logs += x));
 server.stderr.on("data", (x) => (logs += x));
-let browser;
+let browser, reference;
 async function waitServer() {
   for (let n = 0; n < 100; n++) {
     try {
@@ -28,9 +40,9 @@ async function waitServer() {
     } catch {}
     await new Promise((r) => setTimeout(r, 100));
   }
-  throw new Error("Server failed: " + logs);
+  throw Error(logs);
 }
-const action = async (type, payload) => {
+async function action(type, payload) {
   const r = await fetch(url + "/api/actions", {
     method: "POST",
     headers: {
@@ -42,69 +54,163 @@ const action = async (type, payload) => {
   const body = await r.json();
   assert.ok(r.ok, JSON.stringify(body));
   return body.result;
+}
+const readState = async () => await (await fetch(url + "/api/state")).json();
+const geometry = async (page, locator) => {
+  const box = await page.locator(locator).first().boundingBox();
+  return locator === "main"
+    ? { x: box.x, y: box.y, width: box.width }
+    : { x: box.x, y: box.y, width: box.width, height: box.height };
 };
 try {
   await waitServer();
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
+    colorScheme: "light",
   });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  page.on("dialog", (dialog) => dialog.dismiss());
   await page.goto(url);
-  await page.getByText("Create your first issue").waitFor();
+  await page.getByText("No issues in this view").waitFor();
   assert.equal(await page.getByText("JEV-142").count(), 0);
+  await page.getByRole("button", { name: "Create issue", exact: true }).click();
+  const createDialog = page.getByRole("dialog");
+  await createDialog
+    .getByPlaceholder("Issue title")
+    .fill("Browser collaboration");
+  await createDialog
+    .getByPlaceholder("Add description…")
+    .fill("Keep this text unchanged when switching languages.");
+  await page.screenshot({ path: "/tmp/relay-new-issue.png" });
+  await createDialog
+    .getByRole("button", { name: "Create issue", exact: true })
+    .click();
+  await page.getByText("No assignments").waitFor();
+  for (const name of [
+    "Submit task",
+    "Publish artifact",
+    "Request approval",
+    "Request human input",
+    "Edit",
+    "Refresh",
+  ])
+    await expect(page.getByRole("button", { name, exact: true })).toHaveCount(
+      0,
+    );
+  await page.getByRole("button", { name: "Issue actions" }).click();
+  await expect(
+    page.getByRole("button", { name: "Start", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Issue actions" }).click();
+  // Persist metadata from the existing property controls.
   await page
-    .getByRole("button", { name: "New issue", exact: true })
+    .getByRole("button", { name: /priority/i })
+    .first()
+    .click();
+  await page.getByRole("menuitemradio", { name: /High/ }).click();
+  await page.getByRole("button", { name: "Add label" }).click();
+  await page.getByRole("button", { name: "Bug", exact: true }).click();
+  await page
+    .getByPlaceholder("Leave a comment…")
+    .fill("Actual browser comment");
+  await page
+    .locator('textarea[placeholder="Leave a comment…"]')
+    .locator("..")
+    .getByRole("button")
+    .last()
+    .click();
+  await page.getByText("Actual browser comment", { exact: true }).waitFor();
+  // Registration uses the approved same-position absolute directory field.
+  await page
+    .getByRole("button", { name: /^Projects/ })
+    .first()
+    .click();
+  await page.getByRole("button", { name: "New project", exact: true }).click();
+  const pd = page.getByRole("dialog");
+  await pd.getByPlaceholder("ab-gateway").fill("Browser Project");
+  await pd
+    .getByRole("textbox", { name: "Choose a repository folder" })
+    .fill(repo);
+  await pd.getByRole("button", { name: "Browse" }).click();
+  await pd.getByRole("button", { name: repo, exact: true }).click();
+  await page.screenshot({ path: "/tmp/relay-new-project.png" });
+  await pd.getByRole("button", { name: "Create project" }).click();
+  await page.getByRole("button", { name: "New worktree" }).click();
+  const wd = page.getByRole("dialog");
+  await wd.getByPlaceholder("Retry policy", { exact: true }).fill("Main");
+  await wd.getByPlaceholder("feature/retry-policy").fill("main");
+  await wd.getByPlaceholder("Agent retry policy").fill("Browser spec");
+  await wd.getByRole("textbox", { name: "Choose directory" }).fill(repo);
+  await wd.getByRole("button", { name: "Create worktree" }).click();
+  await page.getByRole("textbox", { name: "PRODUCT.md" }).waitFor();
+  await expect(page.getByRole("textbox", { name: "PRODUCT.md" })).toHaveValue(
+    "# Browser product",
+  );
+  await page
+    .getByRole("textbox", { name: "PRODUCT.md" })
+    .fill("# Browser saved product");
+  await page.getByText("Saved locally", { exact: true }).waitFor();
+  assert.equal(
+    readFileSync(join(repo, "docs/PRODUCT.md"), "utf8"),
+    "# Browser saved product",
+  );
+  await page.getByRole("button", { name: "TECH.md", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "TECH.md" })).toHaveValue(
+    "# Browser tech",
+  );
+  writeFileSync(join(repo, "docs/TECH.md"), "# External change");
+  await page
+    .getByRole("textbox", { name: "TECH.md" })
+    .fill("Keep conflict draft");
+  await page.getByText(/Save failed \/ Conflict/).waitFor();
+  assert.equal(
+    readFileSync(join(repo, "docs/TECH.md"), "utf8"),
+    "# External change",
+  );
+  await page.getByRole("button", { name: "PRODUCT.md", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "PRODUCT.md" })).toHaveValue(
+    "# Browser saved product",
+  );
+  await page.getByRole("button", { name: "TECH.md", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "TECH.md" })).toHaveValue(
+    "Keep conflict draft",
+  );
+  await page.getByText(/Save failed \/ Conflict/).waitFor();
+  assert.equal(
+    readFileSync(join(repo, "docs/TECH.md"), "utf8"),
+    "# External change",
+  );
+  await page.screenshot({ path: "/tmp/relay-project-detail.png" });
+  await page
+    .getByRole("button", { name: /^Issues/ })
     .first()
     .click();
   await page
-    .getByRole("dialog")
-    .getByPlaceholder("Issue title")
-    .fill("Browser collaboration");
-  await page
-    .getByPlaceholder("Add description…")
-    .fill("Keep this text unchanged when switching languages.");
-  await page.getByRole("button", { name: "Create issue", exact: true }).click();
-  await page.getByText("No assignments").waitFor();
-  const assertAutomaticIssueControls = async (labels, details) => {
-    for (const name of labels)
-      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: details, exact: true }).first().click();
-    for (const name of labels)
-      await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: details, exact: true }).first().click();
-  };
-  await assertAutomaticIssueControls(
-    ["Submit task", "Publish artifact", "Request approval", "Request human input"],
-    "Details",
-  );
-  const project = await action("project.create", {
-    name: "Browser Project",
-    path: repo,
-  });
-  const tree = await action("worktree.create", {
-    projectId: project.id,
-    name: "Main",
-    branch: "main",
-    path: repo,
-    specName: "Browser spec",
-    specDir: "docs",
-  });
+    .getByRole("button", { name: /REL-1.*Browser collaboration/ })
+    .click();
   await page.getByRole("button", { name: "Bind agent", exact: true }).click();
-  const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Agent", { exact: true }).selectOption("codex");
-  await dialog.getByLabel("Project", { exact: true }).selectOption(project.id);
-  await dialog.getByLabel("Worktree", { exact: true }).selectOption(tree.id);
-  await dialog
-    .getByLabel("Triage routing description")
+  const bindDialog = page.getByRole("dialog");
+  await bindDialog.getByRole("button", { name: /^Project / }).click();
+  await bindDialog.getByRole("combobox").fill("Browser");
+  await bindDialog.getByRole("option", { name: /Browser Project/ }).click();
+  await bindDialog
+    .getByLabel("Routing instructions")
     .fill("Own backend implementation and contract questions");
-  await dialog.getByRole("button", { name: "Bind agent", exact: true }).click();
-  await page.getByText("Browser Project", { exact: true }).last().waitFor();
-  let state = await (await fetch(url + "/api/state")).json();
+  await page.screenshot({ path: "/tmp/relay-bind-agent.png" });
+  const bindGeometry = await bindDialog.boundingBox();
+  await bindDialog
+    .getByRole("button", { name: "Bind agent", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  let state = await readState();
   const issue = state.issues[0];
   assert.equal(state.runs.length, 0);
   assert.equal(issue.status, "Todo");
+  assert.equal(issue.priority, 2);
+  assert.deepEqual(issue.labels, ["Bug"]);
+  assert.equal(state.bindings.length, 1);
   const art = await action("artifact.publish", {
     issueId: issue.id,
     title: "Frozen review",
@@ -121,104 +227,179 @@ try {
     scope: "issue",
   });
   await page
-    .getByText("Approve frozen review", { exact: true })
+    .getByText("Approve frozen review", { exact: false })
     .first()
     .waitFor();
-  await page
-    .getByRole("button", { name: "Inbox", exact: false })
-    .first()
-    .click();
-  await page.getByRole("button", { name: /Approve frozen review/ }).click();
   await page.getByRole("button", { name: "Approve", exact: true }).click();
-  await page.getByText("Approved", { exact: true }).first().waitFor();
-  await page.getByRole("button", { name: /Open issue/ }).click();
-  await page.getByText("Approved", { exact: true }).waitFor();
-  state = await (await fetch(url + "/api/state")).json();
-  assert.equal(state.requests.find((x) => x.id === q.id).status, "Approved");
-  assert.equal(state.issues[0].status, "Todo");
+  await page.getByText("Approved", { exact: false }).first().waitFor();
+  assert.equal(
+    (await readState()).requests.find((r) => r.id === q.id).status,
+    "Approved",
+  );
+  const input = await action("request.create", {
+    issueId: issue.id,
+    title: "Choose policy",
+    kind: "input",
+    body: "Choose one",
+    options: [
+      { value: "per-agent", label: "Per agent" },
+      { value: "global", label: "Global defaults" },
+    ],
+    scope: "issue",
+  });
   await page
-    .getByRole("button", { name: "Projects", exact: false })
+    .getByRole("button", { name: /^Inbox/ })
     .first()
     .click();
+  await page.getByRole("button", { name: /Choose policy/ }).click();
   await page
-    .getByRole("button", { name: /Browser Project/ })
-    .first()
-    .click();
-  await page.getByRole("textbox", { name: "PRODUCT.md" }).waitFor();
-  await page
-    .getByRole("textbox", { name: "PRODUCT.md" })
-    .fill("# Browser saved product");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await page.getByText("Saved locally", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "TECH.md", exact: true }).click();
-  await page.getByRole("textbox", { name: "TECH.md" }).waitFor();
-  await expect(page.getByRole("textbox", { name: "TECH.md" })).toHaveValue(
-    "# Browser tech",
+    .getByPlaceholder("Provide the details needed to continue…")
+    .fill("Per agent");
+  assert.equal(
+    (await readState()).requests.find((r) => r.id === input.id).status,
+    "Pending",
   );
-  await page
-    .getByRole("textbox", { name: "TECH.md" })
-    .fill("Unsaved tech draft");
-  await page.getByRole("button", { name: "PRODUCT.md", exact: true }).click();
-  await page.getByRole("textbox", { name: "PRODUCT.md" }).waitFor();
-  await expect(page.getByRole("textbox", { name: "PRODUCT.md" })).toHaveValue(
-    "# Browser saved product",
+  await page.getByRole("button", { name: "Send response" }).click();
+  assert.equal(
+    (await readState()).requests.find((r) => r.id === input.id).status,
+    "Answered",
   );
-  await page.getByRole("button", { name: "TECH.md", exact: true }).click();
-  await page.getByRole("textbox", { name: "TECH.md" }).waitFor();
-  await expect(page.getByRole("textbox", { name: "TECH.md" })).toHaveValue(
-    "Unsaved tech draft",
-  );
-  await page.getByRole("button", { name: "Search", exact: true }).click();
-  await page
-    .getByPlaceholder("Search by number, title or project")
-    .fill("browser project");
+  await page.getByRole("button", { name: "Search issues" }).click();
+  await page.getByPlaceholder("Search issues…").fill("browser project");
+  await expect(
+    page.getByRole("button", { name: /REL-1.*Browser collaboration/ }),
+  ).toHaveCount(1);
   await page
     .getByRole("button", { name: /REL-1.*Browser collaboration/ })
-    .waitFor();
-  assert.equal(
-    await page
-      .getByRole("button", { name: /REL-1.*Browser collaboration/ })
-      .count(),
-    1,
-  );
-  await page.getByRole("button", { name: "Toggle theme" }).click();
-  await page.getByRole("button", { name: "Switch language" }).click();
-  await page.reload();
-  await page.getByRole("button", { name: "搜索", exact: true }).waitFor();
-  assert.equal(await page.locator("html").getAttribute("lang"), "zh");
-  assert.match(await page.locator("html").getAttribute("class"), /dark/);
+    .click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.screenshot({ path: "/tmp/relay-settings.png" });
   await page
-    .getByPlaceholder("按编号、标题或关联项目搜索")
-    .fill("Browser collaboration");
+    .getByRole("button", { name: /^Agent/ })
+    .first()
+    .click();
+  await page.screenshot({ path: "/tmp/relay-agent.png" });
+  await page
+    .getByRole("button", { name: /^Issues/ })
+    .first()
+    .click();
+  await page
+    .getByRole("button", { name: /REL-1.*Browser collaboration/ })
+    .click();
+  await page.screenshot({
+    path: "/tmp/relay-browser-desktop.png",
+    fullPage: true,
+  });
+  // Render the actual reference source in an isolated preview and compare invariant layout metrics.
+  const design =
+    process.env.UI_DESIGN_DIR || "/home/elliot/workspace/tmp/ui-design";
+  const refRoot = join(dir, "reference");
+  mkdirSync(join(refRoot, "src"), { recursive: true });
+  for (const name of ["App.tsx", "index.css", "main.tsx"])
+    writeFileSync(
+      join(refRoot, "src", name),
+      readFileSync(join(design, "src", name)),
+    );
+  symlinkSync(resolve("node_modules"), join(refRoot, "node_modules"), "dir");
+  writeFileSync(
+    join(refRoot, "index.html"),
+    '<div id="root"></div><script type="module" src="/src/main.tsx"></script>',
+  );
+  await build({
+    root: refRoot,
+    configFile: false,
+    plugins: [react(), tailwind()],
+    logLevel: "error",
+  });
+  reference = createServer((req, res) => {
+    const path = join(
+      refRoot,
+      "dist",
+      req.url === "/" ? "index.html" : req.url,
+    );
+    if (!existsSync(path)) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    res.setHeader(
+      "Content-Type",
+      { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" }[
+        extname(path)
+      ] || "text/plain",
+    );
+    res.end(readFileSync(path));
+  });
+  await new Promise((r) => reference.listen(0, "127.0.0.1", r));
+  const refPage = await browser.newPage({
+    viewport: { width: 1440, height: 1000 },
+    colorScheme: "light",
+  });
+  await refPage.goto(`http://127.0.0.1:${reference.address().port}`);
+  await refPage
+    .getByText("Add retry policies for failed agent tool calls", {
+      exact: true,
+    })
+    .first()
+    .waitFor();
+  assert.deepEqual(
+    await geometry(page, "aside"),
+    await geometry(refPage, "aside"),
+  );
+  assert.deepEqual(
+    await geometry(page, "header"),
+    await geometry(refPage, "header"),
+  );
+  await refPage.getByRole("button", { name: /JEV-142.*Add retry/ }).click();
+  assert.deepEqual(
+    await geometry(page, "main"),
+    await geometry(refPage, "main"),
+  );
+  await refPage
+    .getByRole("button", { name: "Bind agent", exact: true })
+    .click();
+  const refBox = await refPage.getByRole("dialog").boundingBox();
+  assert.equal(bindGeometry.width, refBox.width);
+  assert.equal(bindGeometry.height, refBox.height);
+  await refPage.screenshot({ path: "/tmp/relay-reference-bind.png" });
+  await refPage
+    .getByRole("button", { name: "Close bind agent dialog" })
+    .click();
+  await refPage.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  assert.deepEqual(
+    await geometry(page, "main"),
+    await geometry(refPage, "main"),
+  );
+  await refPage.screenshot({ path: "/tmp/relay-reference-settings.png" });
+  await page.getByRole("button", { name: "Switch to dark mode" }).click();
+  await page.getByRole("button", { name: "Switch to Chinese" }).click();
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await expect(page.locator("html")).toHaveClass(/dark/);
+  await page.getByRole("button", { name: /^任务/ }).first().click();
   await page
     .getByRole("button", { name: /REL-1.*Browser collaboration/ })
     .click();
   await page
     .getByText("Keep this text unchanged when switching languages.")
     .waitFor();
-  await assertAutomaticIssueControls(
-    ["提交处理事项", "发布成果", "请求审批", "请求人工答复"],
-    "详情",
-  );
-  await page.screenshot({
-    path: "/tmp/relay-browser-desktop.png",
-    fullPage: true,
-  });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "绑定 Agent", exact: true }).click();
-  await page.getByRole("dialog").waitFor();
-  assert.ok(await page.getByRole("dialog").isVisible());
+  await page.getByRole("button", { name: "Bind agent", exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
   await page.screenshot({
     path: "/tmp/relay-browser-mobile.png",
     fullPage: true,
   });
   assert.deepEqual(errors, []);
   console.log(
-    "Browser checks passed: empty state, create/bind, approval sync, spec save/drafts, search dedup, preferences, responsive controls.",
+    "Browser checks passed: reference layout, true directory registration, searchable binding, requests, persisted metadata, autosave/conflicts/drafts, search and preferences.",
   );
 } finally {
   await browser?.close();
+  if (reference) await new Promise((r) => reference.close(r));
+  const exit = new Promise((r) => server.once("exit", r));
   server.kill("SIGTERM");
-  await new Promise((r) => server.once("exit", r));
+  await exit;
   rmSync(dir, { recursive: true, force: true });
 }

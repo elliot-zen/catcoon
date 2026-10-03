@@ -84,9 +84,11 @@ export function useRelay() {
   return { state, action, load, error, setError, busy, connection, lastUpdate };
 }
 export function useDraft(key: string) {
-  const [value, setValue] = useState(() => sessionStorage.getItem(key) || "");
-  useEffect(() => {
-    sessionStorage.setItem(key, value);
-  }, [key, value]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const value = drafts[key] ?? sessionStorage.getItem(key) ?? "";
+  const setValue = (next: string) => {
+    sessionStorage.setItem(key, next);
+    setDrafts((current) => ({ ...current, [key]: next }));
+  };
   return [value, setValue] as const;
 }

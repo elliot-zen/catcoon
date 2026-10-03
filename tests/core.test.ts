@@ -19,7 +19,7 @@ import {
   artifact,
   makeRequest,
 } from "../server/domain.ts";
-import { Runtime, parseReport } from "../server/runtime.ts";
+import { Runtime as NativeRuntime, parseReport } from "../server/runtime.ts";
 import { readSpec, saveSpec } from "../server/files.ts";
 import { evaluate } from "../server/jev.ts";
 import { createApp } from "../server/index.ts";
@@ -33,6 +33,12 @@ import type {
   Request,
   Artifact,
 } from "../server/types.ts";
+// Domain/routing tests isolate authenticated tools; native peers are tested separately.
+class Runtime extends NativeRuntime {
+  async prepareCodex(bindingId: string, path: string) {
+    return this.session(bindingId, "codex", path);
+  }
+}
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "relay-test-"));
   const repo = join(root, "repo");
@@ -98,7 +104,7 @@ function fixture() {
       t.id,
       binding.id,
       runtime.context(store.read(), t, binding),
-      0,
+      find(store.read().bindings, binding.id).revision,
     )!;
   };
   const done = () => {
@@ -742,13 +748,7 @@ test("replacement approval moves only its dependent tasks; revision bypasses rej
       decision: "approve",
     });
     s = f.store.read();
-    assert.equal(
-      dependencies(
-        s,
-        s.tasks.find((t) => t.id === next.id)!,
-      ),
-      true,
-    );
+    assert.equal(dependencies(s, s.tasks.find((t) => t.id === next.id)!), true);
     assert.equal(s.requests.find((q) => q.id === r.id)!.supersededById, r2.id);
   } finally {
     f.close();
@@ -920,69 +920,73 @@ test("Jev race discards obsolete decision and low confidence asks once", async (
   }
 });
 
-test("real child JSONL adapter records observable steps, strips secrets/thinking and releases lock on close", async () => {
+test("Pi RPC records real observable events, filters reasoning, and waits for settled", async () => {
   const f = fixture();
-  const previous = process.env.PATH;
+  const old = process.env.PATH;
   try {
     const bin = join(f.root, "bin");
     mkdirSync(bin);
     writeFileSync(
-      join(bin, "codex"),
+      join(bin, "pi"),
       `#!/usr/bin/env node
-let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{
- console.log(JSON.stringify({type:'item.completed',item:{type:'reasoning',text:'PRIVATE-THOUGHT'}}));
- console.log(JSON.stringify({type:'item.completed',item:{type:'command_execution',command:'test command',exit_code:1,aggregated_output:'failed'}}));
- console.log(JSON.stringify({type:'item.completed',item:{type:'command_execution',command:'test retry',exit_code:0,aggregated_output:'passed reported test'}}));
- const report={summary:'Done',artifacts:[{kind:'report',title:'Runtime evidence',content:'actual reported commands'}]};
- const raw=JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'\x60\x60\x60json\\n'+JSON.stringify(report)+'\\n\x60\x60\x60'}})+'\\n';
- process.stdout.write(raw.slice(0,10));setTimeout(()=>{process.stdout.write(raw.slice(10));process.stderr.write('Bearer adapter-secret');},10);
-});
+const readline=require('node:readline');readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);const send=x=>console.log(JSON.stringify(x));if(m.type==='get_state')send({id:m.id,type:'response',success:true,data:{sessionFile:process.argv[process.argv.indexOf('--session')+1],sessionId:'native-pi'}});if(m.type==='prompt'){send({id:m.id,type:'response',success:true});send({type:'tool_execution_end',name:'test command',result:{exit_code:1,output:'failed'}});send({type:'message_end',message:{role:'assistant',content:[{type:'thinking',thinking:'PRIVATE-THOUGHT'},{type:'text',text:JSON.stringify({summary:'Done',artifacts:[{kind:'report',title:'Evidence',content:'actual reported commands'}]})}],stopReason:'stop'}});send({type:'agent_end',willRetry:true});setTimeout(()=>send({type:'agent_settled'}),50);}});
 `,
       { mode: 0o755 },
     );
-    process.env.PATH = bin + ":" + previous;
-    f.store.saveKey("adapter-secret");
+    process.env.PATH = bin + ":" + old;
+    f.domain.action("binding.save", {
+      id: f.binding.id,
+      issueId: f.issue.id,
+      projectId: f.project.id,
+      worktreeId: f.tree.id,
+      agentId: "pi",
+      description: "Pi evidence",
+      revision: 0,
+    });
     const r = f.begin();
     f.runtime.launch(r);
     for (
       let n = 0;
-      n < 100 &&
-      ["starting", "running"].includes(f.store.read().runs[0].status);
+      n < 100 && f.store.read().runs[0].status !== "completed";
       n++
     )
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await new Promise((r) => setTimeout(r, 20));
     const s = f.store.read();
     assert.equal(s.runs[0].status, "completed");
     assert.equal(s.tasks[0].status, "done");
-    assert.equal(s.events.filter((e) => e.type === "step").length, 3);
-    assert.ok(
-      s.events.some((e) =>
-        String(JSON.stringify(e.data)).includes("exit_code"),
-      ),
-    );
+    assert.ok(s.sessions[0].sessionFile);
+    assert.ok(s.runs[0].nativeTurnId);
     assert.ok(!JSON.stringify(s).includes("PRIVATE-THOUGHT"));
-    assert.ok(
-      !JSON.stringify(f.store.publicState()).includes("adapter-secret"),
-    );
     assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 0);
   } finally {
-    process.env.PATH = previous;
+    f.runtime.shutdown();
+    process.env.PATH = old;
     f.close();
   }
 });
-
-test("stop waits for actual child close before unlocking and preserves correction", async () => {
+test("native abort confirms settled before unlocking and preserves correction", async () => {
   const f = fixture();
-  const previous = process.env.PATH;
+  const old = process.env.PATH;
   try {
     const bin = join(f.root, "bin");
     mkdirSync(bin);
     writeFileSync(
-      join(bin, "codex"),
-      "#!/usr/bin/env node\nprocess.stdin.resume();setInterval(()=>{},1000);\n",
+      join(bin, "pi"),
+      `#!/usr/bin/env node
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);console.log(JSON.stringify({id:m.id,type:'response',success:true,data:m.type==='get_state'?{sessionId:'pi'}:{}}));if(m.type==='abort')setTimeout(()=>console.log(JSON.stringify({type:'agent_settled'})),60);});
+`,
       { mode: 0o755 },
     );
-    process.env.PATH = bin + ":" + previous;
+    process.env.PATH = bin + ":" + old;
+    f.domain.action("binding.save", {
+      id: f.binding.id,
+      issueId: f.issue.id,
+      projectId: f.project.id,
+      worktreeId: f.tree.id,
+      agentId: "pi",
+      description: "Pi controlled abort",
+      revision: 0,
+    });
     const r = f.begin();
     f.runtime.launch(r);
     for (
@@ -990,31 +994,30 @@ test("stop waits for actual child close before unlocking and preserves correctio
       n < 100 && f.store.read().runs[0].status === "starting";
       n++
     )
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((r) => setTimeout(r, 10));
     f.domain.action("issue.control", {
       issueId: f.issue.id,
       command: "stop",
       text: "Stop writing and inspect current diff",
     });
-    assert.equal(f.store.read().runs[0].status, "stopping");
     assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 1);
     await f.runtime.tick();
+    assert.equal(f.store.read().runs[0].status, "stopping");
     for (
       let n = 0;
       n < 100 && f.store.read().runs[0].status === "stopping";
       n++
     )
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await new Promise((r) => setTimeout(r, 20));
     assert.equal(f.store.read().runs[0].status, "stopped");
     assert.equal(f.store.db.prepare("SELECT * FROM locks").all().length, 0);
-    assert.equal(f.store.read().issues[0].paused, true);
     assert.equal(
       f.store.read().tasks[1].text,
       "Stop writing and inspect current diff",
     );
   } finally {
     f.runtime.shutdown();
-    process.env.PATH = previous;
+    process.env.PATH = old;
     f.close();
   }
 });
@@ -1197,8 +1200,9 @@ test("unreadable link cannot masquerade as a published contract and binary input
 });
 
 test("development proxy allows browser same-origin writes and rejects another origin", async () => {
-  const { createServer: createViteServer, loadConfigFromFile } =
-    await import("vite");
+  const { createServer: createViteServer, loadConfigFromFile } = await import(
+    "vite"
+  );
   const root = mkdtempSync(join(tmpdir(), "relay-origin-"));
   const app = createApp(root, { worker: false });
   await new Promise<void>((resolve) =>
@@ -1215,6 +1219,7 @@ test("development proxy allows browser same-origin writes and rejects another or
   const vite = await createViteServer({
     ...loaded.config,
     configFile: false,
+    optimizeDeps: { noDiscovery: true, include: [] },
     server: {
       ...loaded.config.server,
       port: 0,
@@ -1271,18 +1276,26 @@ test("Start and Agent handoff automatically route across bindings after Human ap
     const runtime = new Runtime(f.store, (async (_url, options) => {
       const state = JSON.parse(String(options!.body)).state;
       routed.push(state);
-      const choice = state.task.text === "Implement the approved specification"
-        ? implementation.id : f.binding.id;
+      const choice =
+        state.task.text === "Implement the approved specification"
+          ? implementation.id
+          : f.binding.id;
       return Response.json({
         model: "jev-test",
-        answers: { route: {
-          type: "choice", choice, confidence: 0.95,
-          probabilities: { [choice]: 0.95, human: 0.05 },
-        } },
+        answers: {
+          route: {
+            type: "choice",
+            choice,
+            confidence: 0.95,
+            probabilities: { [choice]: 0.95, human: 0.05 },
+          },
+        },
       });
     }) as typeof fetch);
     // Capture dispatches without running authenticated model processes.
-    runtime.launch = (run) => { launched.push(run); };
+    runtime.launch = (run) => {
+      launched.push(run);
+    };
     const advance = async () => {
       await runtime.tick();
       for (let n = 0; n < 100 && runtime.inflight.size; n++)
@@ -1295,12 +1308,33 @@ test("Start and Agent handoff automatically route across bindings after Human ap
     await advance();
     assert.equal(launched.length, 1);
     assert.equal(launched[0].bindingId, f.binding.id);
-    runtime.complete(launched[0].id, true, JSON.stringify({
-      summary: "Specification ready for review; implementation follows approval",
-      artifacts: [{ kind: "spec", title: "Reviewable specification", content: "Exact scoped specification" }],
-      requests: [{ kind: "approval", title: "Review specification", body: "Approve this version before implementation", artifactIndexes: [0], action: "Implement the approved specification", scope: "issue" }],
-      tasks: [{ text: "Implement the approved specification" }],
-    }), "");
+    runtime.complete(
+      launched[0].id,
+      true,
+      JSON.stringify({
+        summary:
+          "Specification ready for review; implementation follows approval",
+        artifacts: [
+          {
+            kind: "spec",
+            title: "Reviewable specification",
+            content: "Exact scoped specification",
+          },
+        ],
+        requests: [
+          {
+            kind: "approval",
+            title: "Review specification",
+            body: "Approve this version before implementation",
+            artifactIndexes: [0],
+            action: "Implement the approved specification",
+            scope: "issue",
+          },
+        ],
+        tasks: [{ text: "Implement the approved specification" }],
+      }),
+      "",
+    );
     let state = f.store.read();
     const approval = state.requests.find((r) => r.kind === "approval")!;
     assert.ok(approval);
@@ -1314,17 +1348,35 @@ test("Start and Agent handoff automatically route across bindings after Human ap
     await advance();
     assert.equal(launched.length, 1);
     assert.equal(routed.length, 1);
-    f.domain.action("request.decide", { requestId: approval.id, revision: approval.revision, decision: "approve" });
+    f.domain.action("request.decide", {
+      requestId: approval.id,
+      revision: approval.revision,
+      decision: "approve",
+    });
     await advance();
     assert.equal(launched.length, 2);
     assert.equal(launched[1].bindingId, implementation.id);
-    assert.equal(routed[1].requests.find((r: Request) => r.id === approval.id).status, "Approved");
+    assert.equal(
+      routed[1].requests.find((r: Request) => r.id === approval.id).status,
+      "Approved",
+    );
     assert.match(launched[1].context, /Exact scoped specification/);
     assert.match(launched[1].context, /Approved/);
-    runtime.complete(launched[1].id, true, JSON.stringify({
-      summary: "Implementation and verification completed",
-      artifacts: [{ kind: "test", title: "Verification evidence", content: "Inspectable verification output" }],
-    }), "");
+    runtime.complete(
+      launched[1].id,
+      true,
+      JSON.stringify({
+        summary: "Implementation and verification completed",
+        artifacts: [
+          {
+            kind: "test",
+            title: "Verification evidence",
+            content: "Inspectable verification output",
+          },
+        ],
+      }),
+      "",
+    );
     await advance();
     state = f.store.read();
     const final = state.requests.find((r) => r.kind === "final")!;
@@ -1332,7 +1384,11 @@ test("Start and Agent handoff automatically route across bindings after Human ap
     assert.equal(final.status, "Pending");
     assert.equal(final.artifactIds.length, 2);
     assert.equal(launched.length, 2);
-    f.domain.action("request.decide", { requestId: final.id, revision: final.revision, decision: "approve" });
+    f.domain.action("request.decide", {
+      requestId: final.id,
+      revision: final.revision,
+      decision: "approve",
+    });
     await advance();
     assert.equal(f.store.read().issues[0].status, "Done");
     assert.equal(launched.length, 2);

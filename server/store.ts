@@ -54,7 +54,13 @@ export function find<T extends { id: string }>(items: T[], value: unknown): T {
 }
 function initial(): State {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    sessions: [],
+    labelCatalog: [
+      { name: "Bug", color: "bg-[#f05256]" },
+      { name: "Feature", color: "bg-[#bb80ff]" },
+      { name: "Improvement", color: "bg-blue-400" },
+    ],
     revision: 0,
     nextIssue: 1,
     issues: [],
@@ -87,7 +93,17 @@ export class Store {
     this.db
       .prepare("INSERT OR IGNORE INTO state VALUES(1,?,0)")
       .run(JSON.stringify(initial()));
-    if (this.read().schemaVersion !== 1)
+    if (this.read().schemaVersion === 1)
+      this.change((s) => {
+        s.schemaVersion = 2;
+        s.sessions = [];
+        s.labelCatalog = initial().labelCatalog;
+        for (const i of s.issues) {
+          i.priority = 0;
+          i.labels = [];
+        }
+      });
+    if (this.read().schemaVersion !== 2)
       throw new Error("Unsupported database schema");
     if (process.env.TYPESAFE_API_KEY && !existsSync(join(dir, "secret.json")))
       this.saveKey(process.env.TYPESAFE_API_KEY);
