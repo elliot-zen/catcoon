@@ -30,6 +30,8 @@ npm start
 4. 创建 Issue、准备绑定，从详情现有“…”中 Start。Pause 只阻止新派发；Stop and correct 保存纠正并请求原生中止，需确认终态才释放锁。Resume 重新评估有效任务；Reopen 为 Done 提供新目标。
 5. Activity 查看实际步骤、成果和请求，Inbox 处理同一请求。输入题填写选项值/标签或文本再提交；路由请求也接受唯一对应一条候选绑定的 Agent 名称，同名多绑定需填写完整选项或绑定 ID；审批卡内 Approve / Request changes 保存人工决定。Agent 自动产生下一轮，满足条件后自动送最终验收，Human 批准才 Done。
 
+Activity 每次 Agent 执行只占一条，默认折叠；展开查看回答、工具调用、成果与交接。审批和输入请求独立展示，状态更新保留在同一请求条目中。
+
 ## Codex 同一会话的终端连接
 
 执行使用 `codex app-server`，通过本地 Unix WebSocket 连接；每条绑定保存并复用 thread，每次执行保存准确 turn。不是 `codex exec`。

@@ -1,4 +1,5 @@
 import { eventNames, zh } from "./i18n";
+import { groupActivity, stepContent, type ActivityEntry } from "./activity";
 import DirectoryField, {
   Backend,
   useBackend,
@@ -9,7 +10,10 @@ import DirectoryField, {
   filesPayload,
 } from "./ui-data";
 import { useDraft } from "./api";
-import type { Request as RelayRequest } from "../server/types";
+import type {
+  Event as RelayEvent,
+  Request as RelayRequest,
+} from "../server/types";
 import {
   Children,
   useEffect,
@@ -136,16 +140,23 @@ function Event({
   avatar,
   tone,
   children,
+  initiallyCollapsed = false,
+  activityId,
 }: {
   avatar?: ReactNode;
   tone?: "dark" | "green" | "blue" | "violet";
   children: ReactNode;
+  initiallyCollapsed?: boolean;
+  activityId?: string;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(initiallyCollapsed);
   const content = Children.toArray(children);
 
   return (
-    <div className="relative flex items-start gap-3 px-2 pb-3 text-xs text-muted-foreground">
+    <div
+      data-activity-id={activityId}
+      className="relative flex items-start gap-3 px-2 pb-3 text-xs text-muted-foreground"
+    >
       <span className="absolute -bottom-1 left-[18px] top-5 w-px bg-border" />
       {avatar ? (
         <Avatar tone={tone}>{avatar}</Avatar>
@@ -159,6 +170,7 @@ function Event({
             size="icon"
             className="size-6"
             aria-label={collapsed ? "Expand event" : "Collapse event"}
+            aria-expanded={!collapsed}
             onClick={() => setCollapsed((current) => !current)}
           >
             <ChevronRight
@@ -170,6 +182,187 @@ function Event({
         {!collapsed && content.slice(1)}
       </div>
     </div>
+  );
+}
+
+function activityName(type: string, language: "en" | "zh") {
+  return language === "zh"
+    ? zh[type] || eventNames[type] || type
+    : eventNames[type] || type;
+}
+
+function ActivityRecord({
+  event: e,
+  language,
+  nested = false,
+}: {
+  event: RelayEvent;
+  language: "en" | "zh";
+  nested?: boolean;
+}) {
+  const { data } = useBackend();
+  const content = stepContent(e);
+  return (
+    <div className={nested ? "mt-3" : ""}>
+      {nested && (
+        <div className="text-xs text-muted-foreground">
+          {content.answer !== undefined
+            ? language === "zh"
+              ? "回答"
+              : "Response"
+            : `${e.source} ${activityName(e.type, language)}`}
+          <span className="px-1">·</span>
+          {time(e.at)}
+        </div>
+      )}
+      {content.answer !== undefined ? (
+        <div className="mt-0.5 whitespace-pre-wrap break-words text-[13px] text-foreground">
+          {content.answer}
+        </div>
+      ) : (
+        <div className="mt-0.5 whitespace-pre-wrap break-words text-[13px] text-muted-foreground">
+          {e.text}
+        </div>
+      )}
+      {content.output !== undefined ? (
+        <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px]">
+          {content.output}
+        </pre>
+      ) : (
+        e.data != null &&
+        content.answer === undefined && (
+          <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px]">
+            {typeof e.data === "string"
+              ? e.data
+              : JSON.stringify(e.data, null, 2)}
+          </pre>
+        )
+      )}
+      {e.type === "attachment.created" && (
+        <a
+          className="text-xs text-blue-600"
+          href={
+            "/api/attachments/" +
+            (e.data as { attachmentId: string }).attachmentId
+          }
+        >
+          {e.text}
+        </a>
+      )}
+      {e.type === "artifact.published" &&
+        data.artifacts
+          .filter(
+            (a) =>
+              a.issueId === e.issueId &&
+              a.id === (e.data as { artifactId?: string })?.artifactId,
+          )
+          .map((a) => (
+            <div
+              key={a.id}
+              className="mt-3 rounded-lg border border-border bg-card p-4 text-[13px]"
+            >
+              <div>
+                {a.title} · {a.version.slice(0, 12)}
+              </div>
+              <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs">
+                {a.content}
+              </pre>
+            </div>
+          ))}
+    </div>
+  );
+}
+
+function ActivityRow({
+  entry,
+  language,
+}: {
+  entry: ActivityEntry;
+  language: "en" | "zh";
+}) {
+  const { data } = useBackend();
+  const first = entry.kind === "event" ? entry.event : entry.events[0];
+  const source =
+    entry.kind === "run" ? entry.run.snapshot.agentName : first.source;
+  let type = first.type;
+  if (entry.kind === "run")
+    type =
+      "run." +
+      ({ starting: "scheduled", running: "started" }[entry.run.status] ||
+        entry.run.status);
+  if (entry.kind === "terminal") {
+    const completed = entry.events.findLast(
+      (e) => e.type === "session.completed",
+    );
+    type = completed
+      ? "run." +
+        (completed.text === "failed"
+          ? "failed"
+          : completed.text === "interrupted"
+            ? "stopped"
+            : "completed")
+      : "run.started";
+  }
+  return (
+    <Event
+      avatar={source[0] || "S"}
+      tone={
+        source === "Triage" ? "violet" : source === "Codex" ? "green" : "dark"
+      }
+      initiallyCollapsed={entry.kind === "run" || entry.kind === "terminal"}
+      activityId={entry.id}
+    >
+      <div>
+        <span className="font-medium text-foreground">{source}</span>{" "}
+        {activityName(type, language)}
+        {(entry.kind === "run" || entry.kind === "terminal") && (
+          <span>
+            {" "}
+            · {entry.events.length} {language === "zh" ? "条记录" : "records"}
+          </span>
+        )}
+        <span className="px-1">·</span>
+        {time(first.at)}
+      </div>
+      {entry.kind === "event" ? (
+        <ActivityRecord event={entry.event} language={language} />
+      ) : entry.kind === "request" ? (
+        <div>
+          <ApprovalCard request={entry.request} />
+          {entry.events
+            .filter((e) => e.type !== "request.created")
+            .map((e) => (
+              <ActivityRecord key={e.id} event={e} language={language} nested />
+            ))}
+        </div>
+      ) : (
+        <div>
+          {entry.kind === "run" && (
+            <div className="mt-1 whitespace-pre-wrap break-words text-[13px] text-muted-foreground">
+              {entry.run.snapshot.projectName} · {entry.run.snapshot.branch} ·{" "}
+              {entry.run.snapshot.path}
+              {"\n"}
+              {entry.run.snapshot.description}
+              {"\n"}
+              {data.tasks.find((t) => t.id === entry.run.taskId)?.text}
+              {entry.run.reason && "\n" + entry.run.reason}
+            </div>
+          )}
+          {entry.events.map((e) => (
+            <ActivityRecord key={e.id} event={e} language={language} nested />
+          ))}
+          {entry.kind === "run" &&
+            entry.run.result &&
+            !entry.events.some(
+              (e) => stepContent(e).answer === entry.run.result,
+            ) && (
+              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[13px]">
+                {entry.run.result}
+              </pre>
+            )}
+        </div>
+      )}
+    </Event>
   );
 }
 
@@ -1648,10 +1841,10 @@ function BindAgentDialog({
   );
   const canBind = Boolean(
     selectedProject &&
-      selectedWorktree &&
-      routingDescription.trim() &&
-      data.agents.some((a) => a.name === agent) &&
-      !busy,
+    selectedWorktree &&
+    routingDescription.trim() &&
+    data.agents.some((a) => a.name === agent) &&
+    !busy,
   );
 
   useEffect(() => {
@@ -3122,87 +3315,13 @@ function RelayView() {
 
                 <div className="space-y-2">
                   <div className="flex flex-col-reverse gap-2">
-                    {data.events
-                      .filter((e) => e.issueId === selectedIssue.uid)
-                      .map((e) => {
-                        const request = data.requests.find(
-                          (q) => q.id === e.requestId,
-                        );
-                        return (
-                          <Event
-                            key={e.id}
-                            avatar={e.source[0] || "S"}
-                            tone={
-                              e.source === "Triage"
-                                ? "violet"
-                                : e.source === "Codex"
-                                  ? "green"
-                                  : "dark"
-                            }
-                          >
-                            <div>
-                              <span className="font-medium text-foreground">
-                                {e.source}
-                              </span>{" "}
-                              {language === "zh"
-                                ? zh[e.type] || eventNames[e.type] || e.type
-                                : eventNames[e.type] || e.type}
-                              <span className="px-1">·</span>
-                              {time(e.at)}
-                            </div>
-                            <div className="mt-0.5 whitespace-pre-wrap break-words text-[13px] text-muted-foreground">
-                              {e.text}
-                            </div>
-                            {e.data != null && (
-                              <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px]">
-                                {typeof e.data === "string"
-                                  ? e.data
-                                  : JSON.stringify(e.data, null, 2)}
-                              </pre>
-                            )}
-                            {request && e.type === "request.created" && (
-                              <ApprovalCard
-                                key={request.id}
-                                request={request}
-                              />
-                            )}
-                            {e.type === "attachment.created" && (
-                              <a
-                                className="text-xs text-blue-600"
-                                href={
-                                  "/api/attachments/" +
-                                  (e.data as { attachmentId: string })
-                                    .attachmentId
-                                }
-                              >
-                                {e.text}
-                              </a>
-                            )}
-                            {e.type === "artifact.published" &&
-                              data.artifacts
-                                .filter(
-                                  (a) =>
-                                    a.issueId === selectedIssue.uid &&
-                                    a.id ===
-                                      (e.data as { artifactId?: string })
-                                        ?.artifactId,
-                                )
-                                .map((a) => (
-                                  <div
-                                    key={a.id}
-                                    className="mt-3 rounded-lg border border-border bg-card p-4 text-[13px]"
-                                  >
-                                    <div>
-                                      {a.title} · {a.version.slice(0, 12)}
-                                    </div>
-                                    <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs">
-                                      {a.content}
-                                    </pre>
-                                  </div>
-                                ))}
-                          </Event>
-                        );
-                      })}
+                    {groupActivity(data, selectedIssue.uid).map((entry) => (
+                      <ActivityRow
+                        key={entry.id}
+                        entry={entry}
+                        language={language}
+                      />
+                    ))}
                   </div>
                   {data.comments
                     .filter((c) => c.issueId === selectedIssue.uid)

@@ -1,4 +1,6 @@
 import { chromium, expect } from "@playwright/test";
+import { Store, id, now } from "../server/store.ts";
+import { event, task, artifact, makeRequest } from "../server/domain.ts";
 import { spawn, execFileSync } from "node:child_process";
 import {
   mkdtempSync,
@@ -321,6 +323,154 @@ try {
     (await readState()).requests.find((r) => r.id === input.id).status,
     "Answered",
   );
+  // Replay native history only in the isolated test database, without model calls.
+  const replay = new Store(join(dir, "data"));
+  const grouped = replay.change((s) => {
+    const binding = s.bindings[0];
+    const work = task(s, issue.id, "Grouped execution verification");
+    const run = {
+      id: id(),
+      issueId: issue.id,
+      taskId: work.id,
+      bindingId: binding.id,
+      snapshot: {
+        ...binding,
+        path: repo,
+        branch: "main",
+        projectName: "Browser Project",
+        agentName: "Codex",
+        command: "codex",
+      },
+      context: "Fixture only",
+      status: "running",
+      startedAt: now(),
+    };
+    s.runs.push(run);
+    event(s, issue.id, "Triage", "run.scheduled", work.text, {
+      runId: run.id,
+      taskId: work.id,
+    });
+    event(s, issue.id, "Codex", "run.started", repo, { runId: run.id });
+    for (const text of ["First grouped reply", "Second grouped reply"])
+      event(s, issue.id, "Codex", "step", "agentMessage", {
+        runId: run.id,
+        data: {
+          type: "agentMessage",
+          output: JSON.stringify({ type: "agentMessage", text }),
+        },
+      });
+    event(s, issue.id, "Codex", "step", "npm test", {
+      runId: run.id,
+      data: {
+        type: "commandExecution",
+        output: JSON.stringify({
+          type: "commandExecution",
+          command: "npm test",
+          aggregatedOutput: "Grouped tool output",
+          exitCode: 0,
+        }),
+      },
+    });
+    const material = artifact(s, {
+      issueId: issue.id,
+      runId: run.id,
+      bindingId: binding.id,
+      title: "Grouped evidence",
+      content: "Frozen grouped evidence",
+    });
+    const request = makeRequest(s, {
+      issueId: issue.id,
+      taskId: work.id,
+      kind: "approval",
+      source: "Codex",
+      title: "Review grouped work",
+      body: "Approval stays outside the execution collapse",
+      artifactIds: [material.id],
+      scope: [work.id],
+      action: "Continue the reviewed scope",
+    });
+    return { runId: run.id, requestId: request.id };
+  });
+  await page
+    .getByRole("button", { name: /^Issues/ })
+    .first()
+    .click();
+  await page
+    .getByRole("button", { name: /REL-1.*Browser collaboration/ })
+    .click();
+  const runRow = page.locator(`[data-activity-id="run:${grouped.runId}"]`);
+  const requestRow = page.locator(
+    `[data-activity-id="request:${grouped.requestId}"]`,
+  );
+  await expect(runRow).toHaveCount(1);
+  await expect(
+    runRow.getByRole("button", { name: "Expand event" }),
+  ).toBeVisible();
+  await expect(
+    runRow.getByText("First grouped reply", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    requestRow.getByRole("button", { name: "Approve", exact: true }),
+  ).toBeVisible();
+  await runRow.getByRole("button", { name: "Expand event" }).click();
+  await expect(
+    runRow.getByText("First grouped reply", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    runRow.getByText("Second grouped reply", { exact: true }),
+  ).toBeVisible();
+  await expect(runRow.getByText("npm test", { exact: true })).toBeVisible();
+  await expect(
+    runRow.getByText("Frozen grouped evidence", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: "/tmp/relay-grouped-activity.png",
+    fullPage: true,
+  });
+  replay.change((s) => {
+    const r = s.runs.find((r) => r.id === grouped.runId);
+    r.status = "completed";
+    r.result = "Third grouped reply";
+    r.finishedAt = now();
+    event(s, issue.id, "Codex", "step", "agentMessage", {
+      runId: r.id,
+      data: {
+        type: "agentMessage",
+        output: JSON.stringify({ type: "agentMessage", text: r.result }),
+      },
+    });
+    event(s, issue.id, "Codex", "run.completed", "completed", { runId: r.id });
+  });
+  // A poll changes status and appends replies without adding a row or collapsing it.
+  await expect(
+    runRow.getByText("Third grouped reply", { exact: true }),
+  ).toBeVisible();
+  await expect(runRow).toContainText("finished execution");
+  await expect(runRow).toHaveCount(1);
+  await expect(
+    runRow.getByRole("button", { name: "Collapse event" }),
+  ).toBeVisible();
+  await runRow.getByRole("button", { name: "Collapse event" }).click();
+  await requestRow
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
+  await expect(
+    requestRow.getByText("Approved", { exact: false }).first(),
+  ).toBeVisible();
+  await expect(requestRow).toHaveCount(1);
+  assert.equal(
+    (await readState()).requests.find((q) => q.id === grouped.requestId).status,
+    "Approved",
+  );
+  replay.close();
+  await page.reload();
+  await expect(
+    runRow.getByRole("button", { name: "Expand event" }),
+  ).toBeVisible();
+  await expect(
+    runRow.getByText("Third grouped reply", { exact: true }),
+  ).toHaveCount(0);
+  await expect(requestRow).toContainText("Approved");
   await page.getByRole("button", { name: "Search issues" }).click();
   await page.getByPlaceholder("Search issues…").fill("browser project");
   await expect(

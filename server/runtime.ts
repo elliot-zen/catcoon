@@ -850,7 +850,7 @@ export class Runtime {
           "Terminal",
           "session.running",
           "Native terminal turn " + turnId,
-          { bindingId: b.id },
+          { bindingId: b.id, data: { sessionId: x.id, nativeTurnId: turnId } },
         );
     });
   }
@@ -911,6 +911,8 @@ export class Runtime {
             {
               bindingId: x.bindingId,
               data: {
+                sessionId: x.id,
+                nativeTurnId: p.turnId,
                 output: this.store
                   .redact(JSON.stringify(p.item))
                   .slice(0, 64000),
@@ -945,7 +947,10 @@ export class Runtime {
             "Terminal",
             "session.completed",
             p.turn.status,
-            { bindingId: x.bindingId },
+            {
+              bindingId: x.bindingId,
+              data: { sessionId: x.id, nativeTurnId: p.turn.id },
+            },
           );
         });
     }

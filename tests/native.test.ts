@@ -11,6 +11,7 @@ import { Rpc } from "../server/agents/rpc.ts";
 import { Store, id, find } from "../server/store.ts";
 import { Domain } from "../server/domain.ts";
 import { Runtime } from "../server/runtime.ts";
+import { groupActivity } from "../src/activity.ts";
 import type { Issue, Project, Worktree, Binding } from "../server/types.ts";
 async function until(predicate: () => boolean) {
   for (let n = 0; n < 200; n++) {
@@ -317,11 +318,33 @@ test("terminal active turn locks worktree; disconnect preserves unknown and rest
       () => recovery!.prepareCodex(f.binding.id, f.repo),
       /busy/,
     );
+    p.notify("item/completed", {
+      turnId: "terminal-turn",
+      item: { type: "agentMessage", text: "Terminal response" },
+    });
+    await until(() =>
+      f.store
+        .read()
+        .events.some(
+          (e) =>
+            e.type === "step" &&
+            (e.data as any)?.nativeTurnId === "terminal-turn",
+        ),
+    );
     p.finish();
     await until(
       () => f.store.db.prepare("SELECT * FROM locks").all().length === 0,
     );
     assert.equal(f.store.read().artifacts.length, 1);
+    const terminalRows = groupActivity(f.store.read(), f.issue.id).filter(
+      (r) => r.kind === "terminal",
+    );
+    assert.equal(terminalRows.length, 1);
+    assert.equal(terminalRows[0].turnId, "terminal-turn");
+    assert.deepEqual(
+      terminalRows[0].events.map((e) => e.type),
+      ["session.running", "step", "step", "session.completed"],
+    );
   } finally {
     recovery?.shutdown();
     f.close();
