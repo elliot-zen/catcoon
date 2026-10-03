@@ -812,13 +812,39 @@ export class Domain {
             fail(400, "INVALID_INPUT", "Input requires an answer");
           if (p.decision === "answer") {
             r.answer = text(p.answer, "Answer");
-            r.answer =
-              r.options?.find((o) => o.label === r.answer)?.value || r.answer;
-            if (
-              r.options?.length &&
-              !r.options.some((o) => o.value === r.answer)
-            )
-              fail(400, "INVALID_INPUT", "Choose a listed option");
+            if (r.options?.length) {
+              const value = r.options.find((o) => o.value === r.answer);
+              let matches = value
+                ? [value]
+                : r.options.filter(
+                    (o) =>
+                      o.label === r.answer ||
+                      `${o.label} · ${o.value}` === r.answer,
+                  );
+              if (!matches.length && r.routeTask && !r.native) {
+                const name = r.answer.toLowerCase();
+                matches = r.options.filter((o) => {
+                  const b = s.bindings.find(
+                    (b) => b.id === o.value && b.issueId === r.issueId,
+                  );
+                  return (
+                    b &&
+                    s.agents
+                      .find((a) => a.id === b.agentId)
+                      ?.name.toLowerCase() === name
+                  );
+                });
+              }
+              if (matches.length !== 1)
+                fail(
+                  400,
+                  "INVALID_INPUT",
+                  matches.length
+                    ? "More than one option matches. Enter the full listed option or its value (binding ID)."
+                    : "Choose a listed option: enter its full label or value (binding ID).",
+                );
+              r.answer = matches[0].value;
+            }
             if (r.routeTask && r.taskId) {
               const b = find(s.bindings, r.answer);
               if (b.removed || b.issueId !== r.issueId)

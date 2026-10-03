@@ -70,8 +70,12 @@ try {
     colorScheme: "light",
   });
   const errors = [];
+  const dialogs = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  page.on("dialog", (dialog) => dialog.dismiss());
+  page.on("dialog", (dialog) => {
+    dialogs.push(dialog.message());
+    return dialog.dismiss();
+  });
   await page.goto(url);
   await page.getByText("No issues in this view").waitFor();
   assert.equal(await page.getByText("JEV-142").count(), 0);
@@ -236,6 +240,59 @@ try {
     (await readState()).requests.find((r) => r.id === q.id).status,
     "Approved",
   );
+  const routeTask = await action("task.create", {
+    issueId: issue.id,
+    text: "restart",
+  });
+  const routing = await action("request.create", {
+    issueId: issue.id,
+    taskId: routeTask.id,
+    title: "Choose a binding for this task",
+    body: "Low confidence; confirm the work scope.",
+    kind: "input",
+    routeTask: true,
+    options: [
+      {
+        value: state.bindings[0].id,
+        label:
+          "Codex · Browser Project · main · Own backend implementation and contract questions",
+      },
+    ],
+    scope: [routeTask.id],
+  });
+  await page.getByLabel("Approval reply").fill("Pi");
+  const previousDialogs = dialogs.length;
+  await page
+    .getByRole("button", { name: "Submit answer", exact: true })
+    .click();
+  await expect.poll(() => dialogs.length).toBe(previousDialogs + 1);
+  assert.match(dialogs.at(-1), /full label or value/);
+  await expect(page.getByLabel("Approval reply")).toHaveValue("Pi");
+  assert.equal(
+    (await readState()).requests.find((r) => r.id === routing.id).status,
+    "Pending",
+  );
+  // Reproduce the screenshot: typing only Codex selects the sole Codex binding.
+  await page.getByLabel("Approval reply").fill("Codex");
+  await page
+    .getByRole("button", { name: "Submit answer", exact: true })
+    .click();
+  await expect
+    .poll(
+      async () =>
+        (await readState()).requests.find((r) => r.id === routing.id).status,
+    )
+    .toBe("Answered");
+  state = await readState();
+  assert.equal(
+    state.requests.find((r) => r.id === routing.id).answer,
+    state.bindings[0].id,
+  );
+  assert.equal(
+    state.tasks.find((t) => t.id === routeTask.id).bindingId,
+    state.bindings[0].id,
+  );
+  assert.equal(dialogs.length, previousDialogs + 1);
   const input = await action("request.create", {
     issueId: issue.id,
     title: "Choose policy",

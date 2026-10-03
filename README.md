@@ -28,7 +28,7 @@ npm start
 2. Spec 输入后自动 CAS 保存；Saved locally 只在实际确认后出现。冲突保留草稿并停止自动覆盖；先核对外部文件，通过 `/api/spec` 明确解决冲突。UI 不增加 Save/Publish 控件。
 3. Settings 保存 Jev API key 并 Test connection；`TYPESAFE_API_KEY` 可作首次配置。密钥独立存储，不进入公开 API 或 Agent 上下文。
 4. 创建 Issue、准备绑定，从详情现有“…”中 Start。Pause 只阻止新派发；Stop and correct 保存纠正并请求原生中止，需确认终态才释放锁。Resume 重新评估有效任务；Reopen 为 Done 提供新目标。
-5. Activity 查看实际步骤、成果和请求，Inbox 处理同一请求。输入题填写选项值/标签或文本再提交；审批卡内 Approve / Request changes 保存人工决定。Agent 自动产生下一轮，满足条件后自动送最终验收，Human 批准才 Done。
+5. Activity 查看实际步骤、成果和请求，Inbox 处理同一请求。输入题填写选项值/标签或文本再提交；路由请求也接受唯一对应一条候选绑定的 Agent 名称，同名多绑定需填写完整选项或绑定 ID；审批卡内 Approve / Request changes 保存人工决定。Agent 自动产生下一轮，满足条件后自动送最终验收，Human 批准才 Done。
 
 ## Codex 同一会话的终端连接
 

@@ -337,6 +337,244 @@ test("input requires explicit valid answer; ordinary comments grant nothing", ()
     f.close();
   }
 });
+test("routing answers accept a unique Agent name and preserve canonical binding plus idempotency", async () => {
+  const f = fixture();
+  try {
+    const t = f.start();
+    f.domain.action("issue.control", { issueId: f.issue.id, command: "pause" });
+    // Only the candidates captured by this request may be selected.
+    const pi = f.domain.action("binding.save", {
+      issueId: f.issue.id,
+      projectId: f.project.id,
+      worktreeId: f.tree.id,
+      agentId: "pi",
+      description: "Handle documentation",
+    }) as Binding;
+    const q = f.store.change((s) =>
+      f.runtime.human(
+        s,
+        find(s.tasks, t.id),
+        "Low confidence; confirm work scope",
+        true,
+      ),
+    ) as Request;
+    assert.equal(q.status, "Pending");
+    assert.equal(find(f.store.read().tasks, t.id).bindingId, undefined);
+    const key = id();
+    const payload = {
+      requestId: q.id,
+      revision: q.revision,
+      decision: "answer",
+      answer: "  cOdEx  ",
+    };
+    const result = f.domain.action("request.decide", payload, key) as Request;
+    assert.equal(result.answer, f.binding.id);
+    assert.equal(result.status, "Answered");
+    assert.deepEqual(f.domain.action("request.decide", payload, key), result);
+    assert.equal(find(f.store.read().tasks, t.id).bindingId, f.binding.id);
+    assert.equal(
+      f.store
+        .read()
+        .events.filter(
+          (e) => e.requestId === q.id && e.type === "request.answer",
+        ).length,
+      1,
+    );
+    assert.equal(
+      f.store.read().notifications.find((n) => n.requestId === q.id)?.archived,
+      true,
+    );
+    await f.runtime.tick();
+    assert.equal(f.store.read().runs.length, 0); // Answering cannot bypass Pause.
+    const restricted = f.domain.action("request.create", {
+      issueId: f.issue.id,
+      taskId: t.id,
+      title: "Codex candidate only",
+      kind: "input",
+      routeTask: true,
+      options: [{ value: f.binding.id, label: "Codex backend binding" }],
+    }) as Request;
+    assert.throws(
+      () =>
+        f.domain.action("request.decide", {
+          requestId: restricted.id,
+          revision: 0,
+          decision: "answer",
+          answer: "Pi",
+        }),
+      code("INVALID_INPUT"),
+    );
+    assert.equal(
+      find(f.store.read().requests, restricted.id).status,
+      "Pending",
+    );
+    assert.notEqual(find(f.store.read().tasks, t.id).bindingId, pi.id);
+  } finally {
+    f.close();
+  }
+});
+
+test("routing names and duplicate labels never guess between bindings; copied full rows remain usable", () => {
+  const f = fixture();
+  try {
+    // Add a second legitimate Worktree using the same tool.
+    execFileSync(
+      "git",
+      [
+        "-C",
+        f.repo,
+        "-c",
+        "user.name=Relay Test",
+        "-c",
+        "user.email=relay@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "fixture",
+      ],
+      { stdio: "ignore" },
+    );
+    const path = join(f.root, "second");
+    execFileSync(
+      "git",
+      ["-C", f.repo, "worktree", "add", "-b", "second", path],
+      { stdio: "ignore" },
+    );
+    const tree = f.domain.action("worktree.create", {
+      projectId: f.project.id,
+      name: "Second",
+      branch: "second",
+      path,
+      specName: "Core",
+      specDir: "docs",
+    }) as Worktree;
+    const second = f.domain.action("binding.save", {
+      issueId: f.issue.id,
+      projectId: f.project.id,
+      worktreeId: tree.id,
+      agentId: "codex",
+      description: "Implement second scope",
+    }) as Binding;
+    const t = f.start();
+    const q = f.store.change((s) =>
+      f.runtime.human(s, find(s.tasks, t.id), "Choose work scope", true),
+    ) as Request;
+    const before = f.store.read();
+    assert.throws(
+      () =>
+        f.domain.action("request.decide", {
+          requestId: q.id,
+          revision: 0,
+          decision: "answer",
+          answer: "Codex",
+        }),
+      (e: unknown) =>
+        code("INVALID_INPUT")(e) &&
+        (e as Error).message.includes("More than one"),
+    );
+    assert.deepEqual(f.store.read(), before); // No task, notification or decision changes.
+    const option = q.options!.find((o) => o.value === second.id)!;
+    f.domain.action("request.decide", {
+      requestId: q.id,
+      revision: 0,
+      decision: "answer",
+      answer: `${option.label} · ${option.value}`,
+    });
+    assert.equal(find(f.store.read().tasks, t.id).bindingId, second.id);
+    const dup = f.domain.action("request.create", {
+      issueId: f.issue.id,
+      taskId: t.id,
+      title: "Duplicate descriptions",
+      kind: "input",
+      routeTask: true,
+      options: [
+        { value: f.binding.id, label: "Same scope" },
+        { value: second.id, label: "Same scope" },
+      ],
+    }) as Request;
+    assert.throws(
+      () =>
+        f.domain.action("request.decide", {
+          requestId: dup.id,
+          revision: 0,
+          decision: "answer",
+          answer: "Same scope",
+        }),
+      code("INVALID_INPUT"),
+    );
+    assert.equal(find(f.store.read().requests, dup.id).status, "Pending");
+    f.domain.action("request.decide", {
+      requestId: dup.id,
+      revision: 0,
+      decision: "answer",
+      answer: f.binding.id,
+    });
+    assert.equal(find(f.store.read().tasks, t.id).bindingId, f.binding.id);
+  } finally {
+    f.close();
+  }
+});
+
+test("option values take precedence over labels; routing aliases cannot revive removed bindings or answer ordinary options", () => {
+  const f = fixture();
+  try {
+    const ordinary = f.domain.action("request.create", {
+      issueId: f.issue.id,
+      title: "Choose policy",
+      kind: "input",
+      options: [{ value: "policy", label: "Codex backend policy" }],
+    }) as Request;
+    assert.throws(
+      () =>
+        f.domain.action("request.decide", {
+          requestId: ordinary.id,
+          revision: 0,
+          decision: "answer",
+          answer: "Codex",
+        }),
+      code("INVALID_INPUT"),
+    );
+    const exact = f.domain.action("request.create", {
+      issueId: f.issue.id,
+      title: "Overlapping values and labels",
+      kind: "input",
+      options: [
+        { value: "Codex", label: "Explicit value" },
+        { value: "other", label: "Codex" },
+      ],
+    }) as Request;
+    const result = f.domain.action("request.decide", {
+      requestId: exact.id,
+      revision: 0,
+      decision: "answer",
+      answer: "Codex",
+    }) as Request;
+    assert.equal(result.answer, "Codex");
+    const t = f.start();
+    const q = f.store.change((s) =>
+      f.runtime.human(s, find(s.tasks, t.id), "Confirm scope", true),
+    ) as Request;
+    f.domain.action("binding.remove", {
+      bindingId: f.binding.id,
+      reason: "Scope removed",
+    });
+    const before = f.store.read();
+    assert.throws(
+      () =>
+        f.domain.action("request.decide", {
+          requestId: q.id,
+          revision: 0,
+          decision: "answer",
+          answer: "Codex",
+        }),
+      code("STALE_VERSION"),
+    );
+    assert.deepEqual(f.store.read(), before);
+  } finally {
+    f.close();
+  }
+});
+
 test("pause plus approval cannot dispatch; final acceptance alone completes", () => {
   const f = fixture();
   try {
@@ -748,7 +986,13 @@ test("replacement approval moves only its dependent tasks; revision bypasses rej
       decision: "approve",
     });
     s = f.store.read();
-    assert.equal(dependencies(s, s.tasks.find((t) => t.id === next.id)!), true);
+    assert.equal(
+      dependencies(
+        s,
+        s.tasks.find((t) => t.id === next.id)!,
+      ),
+      true,
+    );
     assert.equal(s.requests.find((q) => q.id === r.id)!.supersededById, r2.id);
   } finally {
     f.close();
@@ -1200,9 +1444,8 @@ test("unreadable link cannot masquerade as a published contract and binary input
 });
 
 test("development proxy allows browser same-origin writes and rejects another origin", async () => {
-  const { createServer: createViteServer, loadConfigFromFile } = await import(
-    "vite"
-  );
+  const { createServer: createViteServer, loadConfigFromFile } =
+    await import("vite");
   const root = mkdtempSync(join(tmpdir(), "relay-origin-"));
   const app = createApp(root, { worker: false });
   await new Promise<void>((resolve) =>
