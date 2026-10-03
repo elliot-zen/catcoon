@@ -1,40 +1,40 @@
 # TECH — Relay 多 Agent 协同系统
 
-> 版本：0.6 · 2026-10-03 · 目标契约，尚未重构实现。
+> 版本：0.7 · 2026-10-04 · 当前技术契约。
 > 产品语义与验收编号见 [PRODUCT](product.md)。单进程、本地单用户，SQLite，无需外部数据库。
 
 ## 1. 代码组织
 
 保留 Node.js 24、React、Vite、Tailwind 及现有 UI。职责按以下边界实现：
 
-| 位置 | 职责 |
-| --- | --- |
-| server/store.ts、server/types.ts | 业务状态、迁移、事务、幂等、Issue 内 session 与持久化约束。 |
-| server/domain.ts | Issue 状态机、绑定、控制、Request 决定和最终验收。 |
-| server/specs.ts | 系统 Spec 草稿、不可变版本、批准引用、Worktree 固定版本与升级。 |
-| server/files.ts | Git 仓库 / Worktree 的 realpath、common-dir、分支及现场验证；不再作为 Spec 原文存储。 |
-| server/context.ts | 分别构建 Jev 状态与 Agent 输入，固定版本、过滤失效决定与秘密。 |
-| server/triage.ts、server/jev.ts | 持久触发、硬条件检查、类型化判断、响应校验和派发决定。 |
-| server/runtime.ts、server/agents/ | 启停、原生协议、精确会话 / turn 关联、终态与恢复。 |
-| server/streams.ts | 原生事件归一化、持久消息块、SSE、补发与去重。 |
-| server/index.ts | HTTP、同源检查、变更串行入口与恢复顺序。 |
-| scripts/agent-bridge.mjs | 所选 Agent 可调用的本地 Spec / 成果 / 请求读写入口，读取 stdin JSON，经服务验证。 |
-| server/agents/pi-extension.ts | Pi 1.0.0 的系统规格工具与每轮工具范围校验；不参与业务批准。 |
-| src/api.ts、src/activity.ts、src/App.tsx | API / SSE 客户端、单 Run 展示分组、原设计布局和草稿。 |
+| 位置                                     | 职责                                                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| server/store.ts、server/types.ts         | 业务状态、初始化、事务、幂等、Issue 内 session 与持久化约束。                         |
+| server/domain.ts                         | Issue 状态机、绑定、控制、Request 决定和最终验收。                                    |
+| server/specs.ts                          | 系统 Spec 草稿、不可变版本、批准引用、Worktree 固定版本与升级。                       |
+| server/files.ts                          | Git 仓库 / Worktree 的 realpath、common-dir、分支及现场验证；不再作为 Spec 原文存储。 |
+| server/context.ts                        | 分别构建 Jev 状态与 Agent 输入，固定版本、过滤失效决定与秘密。                        |
+| server/triage.ts、server/jev.ts          | 持久触发、硬条件检查、类型化判断、响应校验和派发决定。                                |
+| server/runtime.ts、server/agents/        | 启停、原生协议、精确会话 / turn 关联、终态与恢复。                                    |
+| server/streams.ts                        | 原生事件归一化、持久消息块、SSE、补发与去重。                                         |
+| server/index.ts                          | HTTP、同源检查、变更串行入口与恢复顺序。                                              |
+| scripts/agent-bridge.mjs                 | 所选 Agent 可调用的本地 Spec / 成果 / 请求读写入口，读取 stdin JSON，经服务验证。     |
+| server/agents/pi-extension.ts            | Pi 1.0.0 的系统规格工具与每轮工具范围校验；不参与业务批准。                           |
+| src/api.ts、src/activity.ts、src/App.tsx | API / SSE 客户端、单 Run 展示分组、原设计布局和草稿。                                 |
 
 浏览器与 Agent 均不能直接决定业务状态、审批或目录升级。Jev 不执行工具。接口和流式模块依赖领域服务，不反向从 UI 推导事实。
 
 ## 2. 已有设计与修改边界
 
-| 现有位置 | 复用 / 修改 |
-| --- | --- |
-| Store.change / publicState | 保留事务、幂等和秘密过滤；新增 schema 3，并将 session 权威记录移入 Issue。 |
-| Domain.action / dependencies / finalReady | 保留来源及依赖关系；改为 §4 的状态机和结构化等待原因，最终验收必须包含目标覆盖判断。 |
-| Runtime.context / dispatch / complete / ingest | 拆分上下文和 Triage；取消“只有 tasks 才继续 / 无 JSON 就转人工”的前提，原生结果与业务报告分别处理。 |
-| files.readSpec / saveSpec、/api/spec | 替换为系统 Spec 服务；旧文件读取仅用于迁移。 |
-| agents/codex.ts、agents/pi.ts、scripts/session.mjs | 保留 app-server、Pi 1.0.0 RPC、准确原生身份与终端连接。 |
-| Runtime.step / nativeNotice、activity.ts | 保留准确 Run 分组；替换过滤 thinking 和最终才展示消息的逻辑，接入 §8 流式块。 |
-| tests/core.test.ts、native.test.ts、activity.test.ts | 原生身份、审批和隔离用例继续适用；旧文件 Spec、过滤 thinking、固定 JSON 交接用例按新契约替换。 |
+| 现有位置                                               | 复用 / 修改                                                                                         |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| Store.change / publicState                             | 保留事务、幂等和秘密过滤；新增 schema 3，并将 session 权威记录移入 Issue。                          |
+| Domain.action / dependencies / finalReady              | 保留来源及依赖关系；改为 §4 的状态机和结构化等待原因，最终验收必须包含目标覆盖判断。                |
+| Runtime.begin / complete、Triage.decide、Domain.report | 拆分上下文和 Triage；取消“只有 tasks 才继续 / 无 JSON 就转人工”的前提，原生结果与业务报告分别处理。 |
+| files.readSpec / saveSpec、/api/spec                   | 替换为系统 Spec 服务；移除本地文件 Spec 读写与旧接口。                                              |
+| agents/codex.ts、agents/pi.ts、scripts/session.mjs     | 保留 app-server、Pi 1.0.0 RPC、准确原生身份与终端连接。                                             |
+| Streams.codex / pi、activity.ts                        | 保留准确 Run 分组；替换过滤 thinking 和最终才展示消息的逻辑，接入 §8 流式块。                       |
+| tests/core.test.ts、native.test.ts、activity.test.ts   | 原生身份、审批和隔离用例继续适用；旧文件 Spec、过滤 thinking、固定 JSON 交接用例按新契约替换。      |
 
 视觉只读依据是 /home/elliot/workspace/tmp/ui-design/src/App.tsx 与 src/index.css。原始 docs/PRODUCT.md 是需求输入，不承担新模型的实现契约。
 
@@ -42,7 +42,7 @@
 
 ### 3.1 存储和约束
 
-继续使用 DATA_DIR/relay.sqlite、WAL、BEGIN IMMEDIATE、busy_timeout。业务集合保存在 state.json 单行文档中，schemaVersion=3；这意味着下面的 Issue 字段实际存入持久化 Issue 记录，不另建与其并行的 session 主数据表。
+继续使用 DATA_DIR/relay.sqlite、WAL、BEGIN IMMEDIATE、busy_timeout。业务集合保存在 state 表 json 列的单行文档中，schemaVersion=3；这意味着下面的 Issue 字段实际存入持久化 Issue 记录，不另建与其并行的 session 主数据表。
 
 保留 operations(key PRIMARY KEY, fingerprint, response, created_at) 记录幂等确认；同键同请求返回原结果，同键异请求 409 IDEMPOTENCY_CONFLICT。保留 locks(path PRIMARY KEY, run_id UNIQUE) 按 canonical realpath 占用目录；unknown 不释放。模型请求和原生调用在事务外执行，事务内再次复核快照。
 
@@ -57,47 +57,40 @@
 
 ID 为 UUID，时间为 UTC ISO8601；revision 为非负整数，版本号为正整数。所有创建 / 修改通过领域事务写入。
 
-| 实体 | 核心字段与约束 |
-| --- | --- |
-| Project | id,name,path,commonDir,health,healthReason,checkedAt；Git commonDir 为仓库身份。 |
-| Spec | id,projectId,name,draft:{product,tech,revision,baseVersionId},latestVersionId,createdAt,updatedAt；属于一个项目，名称不作为身份。 |
-| SpecVersion | id,specId,number,product,tech,contentHash,createdAt,sourceIssueId?,sourceRunId?,previousVersionId?；(specId,number) 唯一，发布后不可改写。 |
-| Worktree | id,projectId,name,branch,path,specId,specVersionId,revision；path canonical 唯一，Spec 与版本必须属于本项目 / 指定 Spec，两引用必填。 |
-| Issue | id,number,title,description,corrections:[{id,text,at,source,targetRevision,stopResolved}],targetRevision,status,started,control,revision,createdAt,updatedAt,priority,labels,sessions:Session[],triage:{dirty,evaluationRevision,phase,triggerIds},runBudgetStart；status 为四个既有值。 |
-| Binding | id,issueId,projectId,worktreeId,agentId,description,revision,removed,activeSessionId?；生效四项组合唯一，activeSessionId 必须引用所属 Issue.sessions 的本绑定记录。 |
-| Session | id,bindingId,agentId,projectId,worktreeId,path,generation,status,threadId?,nativeSessionId?,sessionFile?,endpoint?,toolVersion,busyTurnId?,createdAt,parentSessionId?；见 §7。 |
-| Task / 工作事项 | id,issueId,kind(goal/clarification/revision/followup),text,sourceId,requestId?,status,bindingId?,dependencyIds,attempts,waitReason?,retryAt?；状态 pending/running/waiting/done/cancelled/unknown。 |
-| Run | id,issueId,origin(platform/terminal),taskId?,bindingId,sessionId,nativeTurnId?,mode?,snapshot,contextRef?,status,stopRequested,startedAt,finishedAt?,resultArtifactId?,ingestedAt?；状态 starting/running/stopping/completed/failed/stopped/unknown。platform 必须有 taskId/mode/contextRef；terminal 只观察原生事实，不应用平台交接。 |
-| Evaluation | id,issueId,triggerIds,evaluationRevision,snapshotHash,input,answer?,model?,usage?,status,createdAt；状态 pending/evaluating/applied/discarded/failed，用于可定位的判断与恢复。 |
-| Artifact | id,issueId,runId?,bindingId?,kind,title,content,contentHash,specVersionId?,supersedesId?,provenance,createdAt；固定文本 / 证据。 |
-| Request | id,issueId,taskId?,runId?,kind,inputClass?,title,body,options?,objectRefs,scope,action,status,answer?,decision?,decidedBy?,decidedAt?,revision,source,recipient,supersedesId?,supersededById?,native?,resolutionEvidence?。 |
-| Notification | id,requestId,issueId,category,read,archived,createdAt；同 Request 一个通知。 |
-| Comment / Attachment | 所属 issueId、原文 / 上传内容、类型及时间；完成上传后才成为上下文。 |
+| 实体                 | 核心字段与约束                                                                                                                                                                                                                                                                                                                         |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Project              | id,name,path,commonDir,health,healthReason,checkedAt；Git commonDir 为仓库身份。                                                                                                                                                                                                                                                       |
+| Spec                 | id,projectId,name,draft:{product,tech,revision,baseVersionId},latestVersionId,createdAt,updatedAt；属于一个项目，名称不作为身份。                                                                                                                                                                                                      |
+| SpecVersion          | id,specId,number,product,tech,contentHash,createdAt,sourceIssueId?,sourceRunId?,previousVersionId?；(specId,number) 唯一，发布后不可改写。                                                                                                                                                                                             |
+| Worktree             | id,projectId,name,branch,path,specId,specVersionId,revision；path canonical 唯一，Spec 与版本必须属于本项目 / 指定 Spec，两引用必填。                                                                                                                                                                                                  |
+| Issue                | id,number,title,description,corrections:[{id,text,at,source,targetRevision,stopResolved}],targetRevision,status,started,control,revision,createdAt,updatedAt,priority,labels,sessions:Session[],triage:{dirty,evaluationRevision,phase,triggerIds},runBudgetStart；status 为四个既有值。                                               |
+| Binding              | id,issueId,projectId,worktreeId,agentId,description,revision,removed,activeSessionId?；生效四项组合唯一，activeSessionId 必须引用所属 Issue.sessions 的本绑定记录。                                                                                                                                                                    |
+| Session              | id,bindingId,agentId,projectId,worktreeId,path,generation,status,threadId?,nativeSessionId?,sessionFile?,endpoint?,toolVersion,busyTurnId?,createdAt,parentSessionId?；见 §7。                                                                                                                                                         |
+| Task / 工作事项      | id,issueId,kind(goal/clarification/revision/followup),text,sourceId,requestId?,status,bindingId?,dependencyIds,attempts,waitReason?；状态 pending/running/waiting/done/cancelled/unknown。                                                                                                                                             |
+| Run                  | id,issueId,origin(platform/terminal),taskId?,bindingId,sessionId,nativeTurnId?,mode?,snapshot,contextRef?,status,stopRequested,startedAt,finishedAt?,resultArtifactId?,ingestedAt?；状态 starting/running/stopping/completed/failed/stopped/unknown。platform 必须有 taskId/mode/contextRef；terminal 只观察原生事实，不应用平台交接。 |
+| Evaluation           | id,issueId,triggerIds,evaluationRevision,snapshotHash,input,answer?,model?,usage?,status,createdAt；状态 evaluating/applied/discarded/failed，用于可定位的判断与恢复。                                                                                                                                                                 |
+| Artifact             | id,issueId,runId?,bindingId?,kind,title,content,version,specVersionId?,supersedesId?,provenance,createdAt；固定文本 / 证据。                                                                                                                                                                                                           |
+| Request              | id,issueId,taskId?,runId?,kind,inputClass?,title,body,options?,artifactIds,scope,action,status,answer?,decision?,decidedBy?,decidedAt?,revision,source,recipient,supersedesId?,supersededById?,native?,resolutionEvidence?。                                                                                                           |
+| Notification         | id,requestId,issueId,category,read,archived,createdAt；同 Request 一个通知。                                                                                                                                                                                                                                                           |
+| Comment / Attachment | 所属 issueId、原文 / 上传内容、类型及时间；完成上传后才成为上下文。                                                                                                                                                                                                                                                                    |
 
 Issue.control 为 enabled/paused/stopping。waitReason 为结构 {code,requestIds,runIds,conditionKey?,message,recoverable}，不再通过错误文案前缀决定是否允许恢复。
 
 Issue.triage.phase 为 idle/evaluating/running/waiting；Session.status 为 uninitialized/idle/busy/unknown/archived。Run.snapshot 冻结 targetRevision、绑定 revision 与四项范围、Worktree revision、specId/specVersionId/contentHash 和有效批准引用；contextRef 指向 state 内 contextSnapshots 集合的不可变记录 {id,runId,payload,contentHash,createdAt}。公开 state 不返回该集合或 Evaluation.input。
 
-Request.kind 为 input/approval/final；inputClass 为 business/configuration/recovery/native。status 使用 PRODUCT §8.2 的八个值。scope 明确 issue / taskIds / bindingIds / worktreeIds；依赖只能引用本 Issue 的 task / request。objectRefs 可引用固定 artifact、SpecVersion 和目标版本，不用可变草稿作批准对象。
+Request.kind 为 input/approval/final；inputClass 为 business/configuration/recovery/native。status 使用 PRODUCT §8.2 的八个值。scope 明确 issue / taskIds / bindingIds / worktreeIds；依赖只能引用本 Issue 的 task / request。artifactIds 引用固定成果，action 引用 SpecVersion 和目标版本，不用可变草稿作批准对象。
 
-scope 的 JSON 类型为 "issue" 或 {taskIds:string[],bindingIds:string[],worktreeIds:string[]}，对象形式至少一个非空数组；旧 task ID 数组归一化为 taskIds。Request.recipient 为 Human/Agent；来源 source 为 Human/Triage/Agent/System。澄清任务以 requestId/sourceId 指向原问题，只豁免其要回答的这个输入阻塞；回答验证通过后该任务 done、原 Request Answered、原任务依赖重评估。配置请求只有登记的 conditionKey 谓词可置 Resolved，任意业务问题不能使用该机制。
+scope 的 JSON 类型为 "issue" 或 {taskIds:string[],bindingIds:string[],worktreeIds:string[]}，对象形式至少一个非空数组。Request.recipient 为 Human/Agent；来源 source 为 Human/Triage/Agent/System。澄清任务以 requestId/sourceId 指向原问题，只豁免其要回答的这个输入阻塞；回答验证通过后该任务 done、原 Request Answered、原任务依赖重评估。配置请求只有登记的 conditionKey 谓词可置 Resolved，任意业务问题不能使用该机制。
 
 批准 Spec 的 action 为 approve_spec:{specVersionId,worktreeIds,allowedModes}；允许组合升级的 action 为 approve_spec_and_upgrade:{specVersionId,targets:[{worktreeId,fromVersionId,worktreeRevision}],allowedModes}。批准记录还保存批准时的 Issue.targetRevision / 任务范围。单独升级 action 不自动产生实现授权。
 
 Agent 可用性和绑定职责分别保存；sessions 不按 Agent 服务全局共享。所有按 Issue 查询从 issueId 找记录；session 从 Issue.sessions 按 id / bindingId 找，Run.sessionId 能定位历史会话。
 
-### 3.3 迁移与兼容
+### 3.3 初始化与清库
 
-schema 2 → 3 在停止 worker 派发并核查旧活跃运行后进行，先备份数据库；迁移不启动 Agent：
+本版从 schema3 空库开始，不迁移旧 session、文件 Spec 或批准，不保留旧接口。已有 schema 非 3 时拒绝启动，提示先停止服务并运行 `npm run db:reset`。
 
-1. 将顶层 sessions 按 binding.issueId 移入 Issue.sessions，保留 ID、准确 thread / 文件及 Run 引用；补 generation=1 和状态。无归属记录不能猜测，保留迁移诊断并阻止启动完成。
-2. 为每个旧 Worktree 的 specName/specDir 读取旧 PRODUCT / TECH，建立 Spec、初始 SpecVersion、固定引用和共享草稿。相同名字不自动合并；归属不明、不可读或路径逃逸时回滚。旧文件明确不存在时可导入为空，并记录各文件的 missing 来源标记；不能声称读到了已有内容。
-3. 同一个明确旧文档来源可按项目 + canonical 两文件路径去重；不同来源即使内容相同也保留独立 Spec，复用需人工明确重新分配。
-4. 旧 Agent spec artifact 仅在 PRODUCT / TECH、范围与版本可准确匹配时关联 SpecVersion；无法证明适用性的旧批准保留历史，新实现须有效批准。
-5. 补 control、targetRevision、结构化 waitReason 与持久 triage 标记。旧失败 / stopped 保留现场及恢复请求，不能直接重跑；unknown 保留目录占用。
-6. 迁移成功才写 schemaVersion=3；失败原事务回滚。对外 state.sessions 可作为由 Issue.sessions 派生的兼容读字段，不构成第二事实源。
-
-旧 /api/spec 的 worktreeId 查询可继续解析到固定 Spec 并返回新响应；旧写入若缺 specId、draftRevision 或试图写文件，返回 409 SPEC_CONTRACT_CHANGED，不误写共享草稿。新前端采用 §9。旧 task.create / artifact.publish / request.create 可保留兼容校验，但不作为 UI 推进入口。
+清库只重建 DATA_DIR 下的 relay.sqlite 及 WAL / SHM：state、operations、locks、stream_events、stream_items 全部清空。独立 secret.json、Codex 本地原生历史及 Pi session 文件保留，旧原生会话不会自动重新绑定为新 Issue 的会话。新前端仅使用 §9 契约；旧 task.create / artifact.publish / request.create / final 操作和 specName / specDir 不受支持。
 
 ## 4. Issue 状态机
 
@@ -122,7 +115,7 @@ Resume 在无未确认 stop / unknown 恢复依赖且核查条件满足时 contr
 
 目标、固定 Spec、绑定或有效决定改变，递增相关 Issue.evaluationRevision，使旧模型决定失效。普通草稿、心跳、token 不递增。修改 title / description 通过 revision CAS；有效目标修订影响旧派发及验收。工作进行中保存新目标不改当前 Run.snapshot，须暂停 / 停止后调整其执行依据。
 
-finalReady 校验当前目标覆盖的应用 Evaluation、全部必需非 goal 事项、有效批准、无业务阻塞、无 active/unknown Run 或 busy session、非空可检查成果与验证说明。Jev 选择 final 时在同事务将 goal 标 done 并创建 final Request；批准前再次核查目标与材料引用。final Request changes 重新打开 goal、建立 sourceId=Request.id 的修订事项。
+Jev 响应处理在事务内验证当前 Evaluation 的目标覆盖；finalReady 检查全部必需非 goal 事项、当前目标下的实现批准、无业务阻塞、无 active/unknown Run 或 busy session、非空可检查成果与验证说明。历史目标的执行授权不要求为 Reopen 的新目标重复批准。Jev 选择 final 时在同事务将 goal 标 done 并创建 final Request；批准前再次核查目标与材料引用。final Request changes 重新打开 goal、建立 sourceId=Request.id 的修订事项。
 
 最终确认的阻塞检查仅排除正在批准的那个 final Request，不能把它自己的 Pending 当作无法验收的阻塞。final 冻结 targetRevision、成果哈希和 Spec pin；创建该请求本身增加的业务 revision 不废弃自身完成判断，实际目标 / 材料 / 授权变化则必须重新评估。
 
@@ -172,22 +165,23 @@ Done、未 Start、paused / stopping、已知 busy / unknown 原生执行先等�
 
 state 由 context 服务构建并保存在 Evaluation，字段固定：
 
-| 字段 | 传入内容 |
-| --- | --- |
-| schemaVersion,evaluationId,evaluationRevision,trigger | 本次判断身份和触发事实，不作为模型授权。 |
-| issue | id,number,title,description,targetRevision,control；有效纠正和需求原文，验收要求来自需求 / Spec，不增加 UI 字段。 |
-| bindings | 本 Issue 生效绑定 id,description,agentId,projectId,worktreeId；各自实际可用性、目录、分支、specVersionId、批准及阻塞。 |
-| specs | 每个候选固定 SpecVersion 的 PRODUCT / TECH 原文、ID、哈希；相关待审版本及共享草稿，标明用途，不能混成当前依据。 |
-| workItems | 未完成事项、来源、状态、依赖；已完成事项保留关联证据。 |
-| requests,decisions | 当前有效问题及人工决定，对象版本、scope、action；失效决定只以历史关联说明，不作为授权。 |
-| artifacts | 当前相关契约、代码 / 测试 / 报告的完整材料及 provenance；替代链明确。 |
-| recentRuns | 最近结果、失败 / 停止原因、实际公开 answer、可检查工具结果与其 Run / Session / turn ID；不传 thinking。 |
-| comments,attachments | 当前 Issue 评论、已读取文本与附件元数据；未读取材料明确标识，不能评估为已阅读。 |
-| constraints | 串行、批准、版本、权限、运行预算以及 final 的硬条件计算结果。 |
+| 字段                                                  | 传入内容                                                                                                                 |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| schemaVersion,evaluationId,evaluationRevision,trigger | 本次判断身份和触发类型代码，不作为模型授权；对象通过绑定、Run 与 Request ID 定位。                                       |
+| issue                                                 | id,number,title,description,targetRevision,control；有效纠正和需求原文，验收要求来自需求 / Spec，不增加 UI 字段。        |
+| bindings                                              | 本 Issue 生效绑定 id,description,agentId,projectId,worktreeId；各自实际可用性、目录、分支、specVersionId、批准及阻塞。   |
+| specs                                                 | 每个候选固定 SpecVersion 的 PRODUCT / TECH 原文、ID、哈希；相关待审版本及共享草稿，标明用途，不能混成当前依据。          |
+| workItems                                             | 未完成事项、来源、状态、依赖；已完成事项保留关联证据。                                                                   |
+| requests,decisions                                    | 当前有效问题及人工决定，对象版本、scope、action；失效决定只以历史关联说明，不作为授权。                                  |
+| artifacts                                             | 当前相关契约、代码 / 测试 / 报告的完整材料及 provenance；替代链明确。                                                    |
+| recentRuns                                            | 最近结果、失败 / 停止原因、实际公开 answer、可检查工具结果与其 Run / Session / turn ID；不传 thinking。                  |
+| comments,attachments                                  | 当前 Issue 评论、已读取文本与附件元数据；未读取材料明确标识，不能评估为已阅读。                                          |
+| constraints                                           | serial、approvalRequired、dispatchableBindings 与 final 的硬条件 canFinalize；运行预算等条件由 worker 在调用模型前检查。 |
+| nextWorkItem                                          | 本次待处理事项的 ID、原文、类型、来源和依赖；区别于 currentWorkItem 对刚结束工作的完成判断。                             |
 
 不传其他 Issue 原生对话、Jev key、Agent 认证、整个进程环境或无关项目文件。候选 Session 只传 busy 等可用性，不将完整聊天作为 Jev 记忆。
 
-Jev state 采用独立 schemaVersion=1；规格引用先按 ID 去重，再完整附原文。与 Agent 输入相同，必需内容超过256KB时记录 MATERIAL_UNREADABLE 容量阻塞，不静默裁掉正文或决定。
+Jev state 采用独立 schemaVersion=1；规格引用先按 ID 去重，再完整附原文。必需内容超过请求体64KB时记录 MATERIAL_UNREADABLE 容量阻塞（Agent 输入上限256KB），不静默裁掉正文或决定。
 
 一次请求并行询问独立问题；每题依据同一 state，不引用另一题尚未产生的回答：
 
@@ -198,13 +192,67 @@ Jev state 采用独立 schemaVersion=1；规格引用先按 ID 去重，再完�
     "schemaVersion": 1,
     "evaluationId": "<evaluationId>",
     "evaluationRevision": 7,
-    "trigger": {"ids": ["<eventId>"], "type": "run.completed"},
-    "issue": {"id": "<issueId>", "number": "REL-1", "title": "实现用户管理", "description": "添加、编辑、删除和列表", "targetRevision": 1, "control": "enabled", "corrections": []},
-    "bindings": [{"id": "<bindingId>", "agentId": "codex", "projectId": "<projectId>", "worktreeId": "<worktreeId>", "description": "规格与后端实现", "projectName": "backend", "path": "/workspace/backend", "branch": "feature/users", "specVersionId": "<versionId>", "availability": {"agent": "available", "worktree": "healthy", "sessionBusy": false}, "approval": {"approved": false, "requestIds": []}, "blockedBy": []}],
-    "specs": [{"specId": "<specId>", "versionId": "<versionId>", "product": "<固定产品原文>", "tech": "<固定技术原文>", "contentHash": "<sha256>"}],
-    "workItems": [{"id": "<taskId>", "kind": "goal", "text": "实现用户管理", "status": "pending", "sourceId": "<issueId>", "dependencyIds": []}],
-    "requests": [], "decisions": [], "artifacts": [], "recentRuns": [], "comments": [], "attachments": [],
-    "constraints": {"approvalRequired": true, "canFinalize": false, "blockedReasons": []}
+    "trigger": { "ids": ["run.completed"] },
+    "issue": {
+      "id": "<issueId>",
+      "number": "REL-1",
+      "title": "实现用户管理",
+      "description": "添加、编辑、删除和列表",
+      "targetRevision": 1,
+      "control": "enabled",
+      "corrections": []
+    },
+    "bindings": [
+      {
+        "id": "<bindingId>",
+        "agentId": "codex",
+        "projectId": "<projectId>",
+        "worktreeId": "<worktreeId>",
+        "description": "规格与后端实现",
+        "projectName": "backend",
+        "path": "/workspace/backend",
+        "branch": "feature/users",
+        "specVersionId": "<versionId>",
+        "availability": {
+          "agent": "available",
+          "worktree": "healthy",
+          "sessionBusy": false
+        },
+        "approval": { "approved": false, "requestIds": [] }
+      }
+    ],
+    "specs": [
+      {
+        "id": "<versionId>",
+        "specId": "<specId>",
+        "product": "<固定产品原文>",
+        "tech": "<固定技术原文>",
+        "contentHash": "<sha256>"
+      }
+    ],
+    "workItems": [
+      {
+        "id": "<taskId>",
+        "kind": "goal",
+        "text": "实现用户管理",
+        "status": "pending",
+        "sourceId": "<issueId>",
+        "dependencyIds": []
+      }
+    ],
+    "requests": [],
+    "decisions": [],
+    "artifacts": [],
+    "recentRuns": [],
+    "comments": [],
+    "attachments": [],
+    "constraints": {
+      "approvalRequired": true,
+      "serial": true,
+      "canFinalize": false,
+      "dispatchableBindings": ["<bindingId>"],
+      "note": "未批准或空 Spec 可派发规格规划，但不能实施代码。"
+    }
   },
   "questions": {
     "next_action": {
@@ -227,7 +275,7 @@ Jev state 采用独立 schemaVersion=1；规格引用先按 ID 去重，再完�
         "clarify": "回答关联问题",
         "revise": "根据明确修改意见修订",
         "inspect": "读取并核查现场或补充结果",
-        "none": "当前不应派发"
+        "none": "当前没有 Agent 可交付的剩余事项"
       }
     },
     "route": {
@@ -254,20 +302,20 @@ Jev state 采用独立 schemaVersion=1；规格引用先按 ID 去重，再完�
 
 实际 state 是对象，route.criteria 包含全部本 Issue 生效候选，不是占位符字符串。最多 254 绑定 + human。问题类型与固定选项由代码生成，需求 / description 作为数据，不接受其改写系统问题。
 
-workItems 中若存在刚结束 Run 处理的非 goal 事项，state.currentWorkItem 固定该事项与结果，并增加 work_item_complete:{type:"noul",instructions:"state.currentWorkItem 的准确范围是否已有相应成果覆盖？澄清必须有原请求的有效答案。"}。该结果 >=0.90 且关联证据 / 请求校验通过后，领域事务可将该事项置 done；否则保持 pending 或其真实依赖 waiting。goal 只能按 §4 最终验收准备规则完成。由此自然语言报告也能完成修订 / 后续事项，无需强制 JSON。没有此事项时不发送或消费该问题。
+workItems 中若存在刚结束 Run 处理的非 goal 事项，state.currentWorkItem 固定该事项与结果，并增加 work_item_complete:{type:"noul",instructions:"state.currentWorkItem 的准确范围是否已有相应成果覆盖？澄清必须有原请求的有效答案。"}。该结果 >=0.50 且关联证据 / 请求校验通过后，领域事务可将该事项置 done；否则保持 pending 或其真实依赖 waiting。goal 只能按 §4 最终验收准备规则完成。由此自然语言报告也能完成修订 / 后续事项，无需强制 JSON。没有此事项时不发送或消费该问题。
 
 ### 6.3 响应处理
 
 Choice 读取 type、choice、confidence、probabilities；Noul 读取 type、noul。校验问题齐全、type 匹配、choice 属于请求候选、所有概率有限且在 [0,1]、候选键完整、和误差 ≤1e-6、confidence / noul 在 [0,1]。存实际 model、usage、完整 typed answer 和 snapshotHash，不伪造模型解释。
 
-只消费当前动作所需结果：非 dispatch 忽略 mode / route 的决策意义，final 同时检查 goal_complete；按请求中存在的题目校验可选 work_item_complete，在领域事务中先更新对应事项，再检查 final 条件。采用既有 Choice 阈值 0.65，目标覆盖门槛 noul>=0.90；低于阈值不能自动提交最终验收。Noul 数值不是 Choice confidence。
+只消费当前动作所需结果：非 dispatch 忽略 mode / route 的决策意义，final 同时检查 goal_complete；按请求中存在的题目校验可选 work_item_complete，在领域事务中先更新对应事项，再检查 final 条件。自动动作采用 Choice 阈值 0.65；final 只生成 Human 验收请求，因此不受 next_action confidence 阈值阻塞，仍须目标覆盖 noul>=0.50 和全部硬性校验通过。Noul 是肯定答案的概率，0.50 是本系统的二值判断界线，不作为 Choice confidence 使用；该判断只允许提交人工验收，不能直接 Done。
 
 处理顺序：
 
 1. 响应后比对 evaluationRevision、目标、绑定、Spec pin、control。变化则 Evaluation=discarded、重新 dirty，不派发。
-2. next_action 置信不足 → 一个有来源的 Human 路由 / 目标核查请求。
+2. 非 final 的 next_action 置信不足 → 一个有来源的 Human 路由 / 目标核查请求；final 继续检查覆盖与硬性前置条件，避免在人工验收前重复要求确认。
 3. dispatch → mode 必须非 none，相关 mode / route 置信均 >=0.65，route 为具体合法 binding；否则 Human。Agent 之前建议的 bindingId 是参考，不能跳过本轮重新评估。
-4. final → goal_complete>=0.90 且 §4 的硬条件全部满足，才创建明确最终验收；否则不能结束目标，安排可解释的核查或 Human 请求。
+4. final → goal_complete>=0.50 且 §4 的硬条件全部满足，才创建明确最终验收；否则不能结束目标；存在合法 Agent 时形成来源为该 Evaluation 的目标核查事项，重新让 Jev 选择处理者及类型，不能改选概率第二高动作。不能自主核查时请求 Human。
 5. wait → 必须能定位实际未满足条件；没有可定位条件时转核查，不能无限空等。
 6. human → 使用现有原问题 / 修改请求的材料，或固定模板引用最新报告生成澄清卡；Jev 不生成问题正文，代码不能凭选择结果编造缺失业务字段。
 7. 判定相互矛盾或超出授权时拒绝动作、保存 typed answer 和具体校验原因，转核查；不选择概率第二高候选冒充原判断。
@@ -278,39 +326,43 @@ Jev 超时15秒；网络 / 429 / 529 / 5xx 最多3次，指数退避500ms、1000
 
 ### 6.4 Agent 输入与业务报告
 
+Jev 的独立题目不能引用同批其他题目的答案；dispatch_mode 按“若派发，交付何种剩余工作”判断，代码仅在 dispatch 时消费它。Jev 状态去除重复正文：Spec Artifact 引用已提供的版本原文、执行结果 Artifact 引用 recentRuns.answer、原生观察引用 recentRuns.toolResults；契约、问题和必要原文仍保留，缺失时明确阻塞。Jev 请求体本地上限64KB，Agent 输入上限256KB；这是体积保护，不替代服务端 token 限额。
+
 Agent 输入是以下结构化对象加执行规则。每轮存 contextRef 指向不可变快照；必要原文总量超过256KB时阻塞并说明缺失，不静默截断。
 
-| 字段 | 内容 |
-| --- | --- |
-| execution | runId,sessionId,mode,taskId,requestId?,trigger,开始时 evaluationRevision。 |
-| issue | 当前目标原文、targetRevision、纠正和验收依据。 |
-| assignment | 自身四项绑定、真实目录与分支，其他有效绑定的职责和范围。 |
-| spec | 固定 specId/specVersionId、PRODUCT / TECH 完整原文、hash；spec 模式另附 draft / draftRevision / baseVersion 和待审版本。 |
-| permissions | 本 Issue 对准确对象、模式、目录的有效批准，待决 / 失效请求及禁止动作。 |
-| workItems,requests | 当前及相关未完成事项、依赖、待答问题与原文，明确哪个 request 可由本轮回答。 |
-| artifacts,recentResults | 所需完整成果、接口契约、测试 / diff 与来源；其他 Run 的必要结果，不能靠完整聊天替代。 |
-| comments,attachments | Issue 评论、文本附件和真实读取结果；二进制在适配器未支持直接输入时要求文本说明。 |
-| bridge | 本地辅助命令的绝对路径、runId、可用操作与结构，用于读系统 Spec、提交成果及请求。 |
+| 字段                    | 内容                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| execution               | runId,sessionId,mode,taskId,requestId?,trigger,开始时 evaluationRevision。                                               |
+| issue                   | 当前目标原文、targetRevision、纠正和验收依据。                                                                           |
+| assignment              | 自身四项绑定、真实目录与分支，其他有效绑定的职责和范围。                                                                 |
+| spec                    | 固定 specId/specVersionId、PRODUCT / TECH 完整原文、hash；spec 模式另附 draft / draftRevision / baseVersion 和待审版本。 |
+| permissions             | 本 Issue 对准确对象、模式、目录的有效批准，待决 / 失效请求及禁止动作。                                                   |
+| workItems,requests      | 当前及相关未完成事项、依赖、待答问题与原文，明确哪个 request 可由本轮回答。                                              |
+| artifacts,recentResults | 所需完整成果、接口契约、测试 / diff 与来源；其他 Run 的必要结果，不能靠完整聊天替代。                                    |
+| comments,attachments    | Issue 评论、文本附件和真实读取结果；二进制在适配器未支持直接输入时要求文本说明。                                         |
+| bridge                  | 原生注册的工具名称及 specId；CLI 辅助命令通过当前 Run 的环境凭据调用同一入口。                                           |
 
 执行规则：依据自身范围自主规划；代码实现使用已批准固定版本；保留既有现场；不得扩大目录、代签批准或执行未授权合并 / 部署；报告实际验证与缺失，必要时提问或提交候选后续事项。原生 session 历史与本轮输入并存，但本轮版本及有效决定优先。
 
-bridge 读取 stdin JSON，POST /api/runs/:runId/report；报告结构：
+bridge 读取 stdin JSON {tool,args,callId}，POST /api/runs/:runId/tool；relay_report 的 args 报告结构：
+
 ```text
 {
   specProposal?: {specId,baseVersionId,draftRevision,product,tech,upgradeTargets:[{worktreeId,fromVersionId,worktreeRevision}]},
   artifacts?: [{kind,title,content,supersedesId?}],
-  requests?: [{kind:"input"|"approval",title,body,scope,artifactIndexes,action,routeToAgent?}],
+  requests?: [{kind:"input"|"approval",title,body,scope,artifactIndexes,action,routeToAgent?,supersedesId?}],
   answer?: {requestId,text},
-  suggestions?: [{text,bindingId?,dependencyIds?}]
+  suggestions?: [{text,dependencyIds?}]
 }
 ```
-报告 Idempotency-Key 必填。服务验证当前 Run / session、同 Issue、对象归属、准确依赖、有效状态和允许操作；Agent 不可创建 final、批准、升级 pin、修改别的 Issue 或回答无关问题。SpecProposal 发布原子版本与明确审批对象，不能直接改已发布内容。bridge 同时提供 GET 读取当前系统草稿 / 固定版本；不要求 Spec 原文落进 Git。
 
-原生 relay_report 的幂等键由宿主按 sessionId + turnId + toolCallId 稳定生成；同一调用重送不重复发布。CLI bridge 每次人工 / Agent 明确操作生成并保留 UUID，网络重试复用该值；相同键不同参数按指纹拒绝。
+报告 Idempotency-Key 必填。服务验证当前 Run / session、同 Issue、对象归属、准确依赖、有效状态和允许操作；Agent 不可创建 final、批准、升级 pin、修改别的 Issue 或回答无关问题。SpecProposal 发布原子版本与明确审批对象，不能直接改已发布内容。bridge 的 relay_spec_read 工具读取当前系统草稿 / 固定版本；不要求 Spec 原文落进 Git。
+
+原生 relay_report 的幂等键由宿主按 sessionId + turnId + toolCallId 稳定生成；同一调用重送不重复发布。CLI bridge 要求调用者保留稳定 callId；HTTP Idempotency-Key 使用 UUID，业务幂等按 Run + callId 处理，相同调用 ID 不同参数按指纹拒绝。
 
 为使批准前的规格写入不依赖开放仓库写权限，Codex 在 thread/start 注册 relay_spec_read、relay_report 两个 dynamicTools，通过 item/tool/call 交由宿主领域服务处理；Pi 1.0.0 extension 注册同名工具调用相同服务。relay_spec_read 参数 {specId,document,versionId?}，返回 §9 的文档结构；relay_report 参数即上述报告，宿主以实际 thread/turn 解析 Run，不能信任模型自报的 runId。对 terminal-origin 的调用只允许范围内读取，不接受平台业务报告。CLI bridge 是相同服务的辅助入口，不是唯一模型写入路径。
 
-每次报告全体校验通过后事务应用，失败无部分成果 / 请求。业务报告错误与原生执行事实分开保存，不能把“无效业务字段”改写为整个原生执行没有发生。自然语言 answer 通过原生流保存，不要求最终 fenced JSON；旧 fenced JSON 可解析为兼容报告，但无效或缺失时仍触发 Triage，按已有事实继续核查。
+每次报告全体校验通过后事务应用，失败无部分成果 / 请求。业务报告错误与原生执行事实分开保存，不能把“无效业务字段”改写为整个原生执行没有发生。自然语言 answer 通过原生流保存，不要求最终 fenced JSON；不解析旧 fenced JSON；业务写入只通过已注册的系统工具，原生终态始终触发 Triage。
 
 原生终态事务保存完整公开回答为 report Artifact，关联代码 / 工具证据与已提交业务报告；把本轮事项恢复到可评估或其真实依赖状态，dirty=true。停止意图存在时不自动应用被中止输出中的派发建议。ingestedAt 和终态 dedup 防重复应用。
 
@@ -340,54 +392,55 @@ Pi 加载 Relay extension，依据实际 Run 在 prompt 前更新工具范围。
 
 依据 [Codex App Server 公开事件](https://learn.chatgpt.com/docs/app-server) 与 Pi 1.0.0 随包事件协议，原生通知映射为统一 stream item；不扫描隐藏会话文件抽取工具未公开的推理。
 
-| 统一内容 | Codex | Pi 1.0.0 |
-| --- | --- | --- |
-| Answer 增量 | item/agentMessage/delta，按 itemId 拼接 | message_update.assistantMessageEvent 的 text_start/delta/end，按 message + contentIndex |
-| Thinking 增量 | item/reasoning/summaryTextDelta、summaryPartAdded；只呈现公开可读摘要 | thinking_start/delta/end；只呈现事件提供的内容 |
-| 工具生命周期 | item/started、item/completed 的 commandExecution / fileChange / MCP 等 | tool_execution_start/update/end，以 toolCallId 关联 |
-| 命令输出 | item/commandExecution/outputDelta | tool 的 partialResult 与最终 result，按该工具语义替换或扩展 |
-| 权威内容 | item/completed | text_end / thinking_end 和最终 message_end |
-| 整轮终态 | 对应 turn/completed | agent_settled，结合最终 stopReason / error |
+| 统一内容      | Codex                                                                  | Pi 1.0.0                                                                                |
+| ------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Answer 增量   | item/agentMessage/delta，按 itemId 拼接                                | message_update.assistantMessageEvent 的 text_start/delta/end，按 message + contentIndex |
+| Thinking 增量 | item/reasoning/summaryTextDelta、summaryPartAdded；只呈现公开可读摘要  | thinking_start/delta/end；只呈现事件提供的内容                                          |
+| 工具生命周期  | item/started、item/completed 的 commandExecution / fileChange / MCP 等 | tool_execution_start/update/end，以 toolCallId 关联                                     |
+| 命令输出      | item/commandExecution/outputDelta                                      | tool 的 partialResult 与最终 result，按该工具语义替换或扩展                             |
+| 权威内容      | item/completed                                                         | text_end / thinking_end 和最终 message_end                                              |
+| 整轮终态      | 对应 turn/completed                                                    | agent_settled，结合最终 stopReason / error                                              |
 
-Codex 原始 reasoning/textDelta 不作为公开摘要的替代；模型未提供摘要时不生成 Thinking。工具内容依据真实 commandActions / toolName 显示：已确认 read → Read，命令 → Exec，其他使用真实名字，不按模糊文本猜测读取。内部 item key 含 session、turn、原生 item / 消息标识；Pi 没有 message ID 时使用本连接的持久 message 序号 + contentIndex，重连靠最终快照核对。
+Codex 原始 reasoning/textDelta 不作为公开摘要的替代；模型未提供摘要时不生成 Thinking。工具内容依据真实 commandActions / toolName 显示：已确认 read → Read，命令 → Exec，其他使用真实名字，不按模糊文本猜测读取。内部 item key 含 session、turn、原生 item / 消息标识；Pi 没有 message ID 时使用本 Run 连接内 message 序号 + contentIndex，生成的块 ID 随流式记录持久化，重连靠最终快照核对。
 
 增量先写 stream_events 并更新 stream_items，同事务确认后推送 SSE。最终权威内容替换局部拼接结果，不再次追加完整文本。token 不更新 Issue.updatedAt；开始、业务成果、请求和终态更新业务时间。公开 thinking 持久化供刷新查看，但不进入 Jev 或其他 Agent 共享上下文；不保存未公开推理、签名块或凭据。
 
-Codex 重连时 thread/read(includeTurns) 获取完整 items 校正；没有可重放的原生 token ID 时不能盲目重复拼接，先 snapshot replace 再接新流。Pi 最终 message 校正已缓存块，无法确定的增量标 interrupted，不能伪造完整过程。
+Codex 重连时 thread/read(includeTurns) 获取完整 items 校正；没有可重放的原生 token ID 时不能盲目重复拼接，先 snapshot replace 再接新流。Pi 最终 message 校正已缓存块；执行失联则保留已有块与 Run unknown，直到准确核查，不能伪造完整过程。
 
-GET /api/stream?issueId=<id> 使用 SSE，event:stream、event:item.snapshot 的 id 为 SQLite seq，支持 Last-Event-ID 或 after 游标；event:state.changed 不设置 id，仅提示重新读取 /api/state，不能推进流游标。stream payload 为 {seq,issueId,runId,sessionId,turnId?,itemKey,kind,operation:"append"|"replace"|"status",data}。初次读取整个 Issue 的 items 快照及全局 lastSeq（同一数据库读事务），再订阅 after=lastSeq，消除多 Run 快照窗口丢失。
+GET /api/stream?issueId=<id> 使用 SSE，event:stream 的 id 为 SQLite seq，支持 Last-Event-ID 或 after 游标；event:state.changed 不设置 id，仅提示重新读取 /api/state，不能推进流游标。stream payload 为 {seq,issueId,runId,sessionId,turnId?,itemKey,kind,operation:"append"|"replace"|"status",data}。初次读取整个 Issue 的 items 快照及全局 lastSeq（同一数据库读事务），再订阅 after=lastSeq，消除多 Run 快照窗口丢失。
 
-每 Run 顶层一条默认折叠 Activity；请求按 requestId 独立行默认展开。stream_items 在展开区按首次 seq 排序，更新原块；调用内参数、stdout、状态与结果可折叠。收到新流不改变用户展开状态。原生终端额外 turn 记录准确 origin=terminal 的独立运行观察，不当作平台 goal 完成。
+每 Run 顶层一条默认折叠 Activity；请求按 requestId 独立行默认展开。stream_items 在展开区按首次 seq 排序，更新原块；展开区显示调用参数、stdout、状态与结果。收到新流不改变用户展开状态。原生终端额外 turn 记录准确 origin=terminal 的独立运行观察，不当作平台 goal 完成。
 
-单次原生事件公开载荷上限64KB，超限明示截断；权威材料要求完整可读，不能把截断数据作为批准或完成依据。高频 delta 可100ms批量事务但维持顺序，批次提交后推送。SSE 慢消费者断开后按 seq 补发，不拖住原生 stdout；不无限缓存内存。连接错误保留最后确认快照与现有状态位置，不新增状态面板。
+单次原生事件公开载荷上限64KB；参数超过32KB先标明截断，载荷包含参数与文本共同限额，超限明示截断；权威材料要求完整可读，不能把截断数据作为批准或完成依据。高频 delta 可100ms批量事务但维持顺序，批次提交后推送。SSE 慢消费者断开后按 seq 补发，不拖住原生 stdout；不无限缓存内存。连接错误保留最后确认快照与现有状态位置，不新增状态面板。
 
 ## 9. HTTP 与界面契约
 
 同源 / loopback 写入允许，Vite changeOrigin=false；继续拒绝跨 Origin 写入。body 最大12MB，单附件5MB；敏感配置独立 secret.json、0600，不进入 state / prompt / stream。所有变更 Idempotency-Key 必填，revision CAS，失败统一 {error:{code,message,details?}}。
 
-| 接口 | 输入 / 输出 |
-| --- | --- |
-| GET /api/state | 公开业务集合，新增 specs / specVersions 摘要和 Issue.sessions / triage 状态；不返回 key、Run.context、完整大流式载荷及附件二进制。 |
-| GET /api/specs?projectId= | [{id,projectId,name,latestVersionId,versions:[{id,number,contentHash}]}]，供原 Spec 字段选择。 |
-| POST /api/specs | {projectId,name} → {spec,initialVersion}；创建初始空版本，不批准。 |
+| 接口                                                    | 输入 / 输出                                                                                                                                             |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /api/state                                          | 公开业务集合，新增 specs / specVersions 摘要和 Issue.sessions / triage 状态；不返回 key、Run.context、完整大流式载荷及附件二进制。                      |
+| GET /api/specs?projectId=                               | [{id,projectId,name,latestVersionId,versions:[{id,number,contentHash}]}]，供原 Spec 字段选择。                                                          |
+| POST /api/specs                                         | {projectId,name} → {spec,initialVersion}；创建初始空版本，不批准。                                                                                      |
 | GET /api/spec?specId=&document=product\|tech&versionId= | 指定不可变版本 → {specId,versionId,document,content,contentHash}；省略 versionId 读取共享草稿 → {specId,document,content,draftRevision,baseVersionId}。 |
-| PUT /api/spec | {specId,document,content,draftRevision} → 保存后的草稿结构；409 SPEC_CONFLICT 包含当前草稿。 |
-| POST /api/specs/:id/versions | {draftRevision} → {version,revision}，发布完整 pair；本地 Human 或经 Run 范围校验的 Agent 调用。 |
-| POST /api/worktrees/:id/spec | {specId,versionId,revision,reason} → {worktree,affectedIssueIds,revision}；Human 明确分配 / 升级，未批准仍不允许实现。 |
-| GET /api/runs/:id/items | {items:[{itemKey,kind,status,content,metadata,firstSeq,lastSeq}],lastSeq}，供单 Run 展开读取。 |
-| GET /api/issues/:id/items | {runs:[{runId,items}],lastSeq}，同一读事务获取本 Issue 全部块与全局流游标，供首次订阅 / 重连。 |
-| GET /api/stream | §8 的 SSE，必须验证 issueId 与非负整数游标。 |
-| POST /api/runs/:id/report | §6.4 结构 → {appliedIds,revision}，当前 Run 范围内业务操作；Agent 不能调用 Human decide。 |
-| POST /api/actions | 继续 {type,payload} → {result,revision}；下表约束。 |
-| GET /api/directories、/api/attachments/:id、/api/health | 保留真实目录、原附件和健康读取。 |
+| PUT /api/spec                                           | {specId,document,content,draftRevision} → 保存后的草稿结构；409 SPEC_CONFLICT 包含当前草稿。                                                            |
+| POST /api/specs/:id/versions                            | {draftRevision} → {version,revision}，发布完整 pair；本地 Human 调用；Agent 通过 relay_report.specProposal 提交并产生审批。                             |
+| POST /api/worktrees/:id/spec                            | {specId,versionId,revision,reason} → {worktree,affectedIssueIds,revision}；Human 明确分配 / 升级，未批准仍不允许实现。                                  |
+| GET /api/runs/:id/items                                 | {items:[{itemKey,kind,status,content,metadata,firstSeq,lastSeq}],lastSeq}，供单 Run 展开读取。                                                          |
+| GET /api/issues/:id/items                               | {runs:[{runId,items}],lastSeq}，同一读事务获取本 Issue 全部块与全局流游标，供首次订阅 / 重连。                                                          |
+| GET /api/stream                                         | §8 的 SSE，必须验证 issueId 与非负整数游标。                                                                                                            |
+| POST /api/runs/:id/report                               | §6.4 结构 → {appliedIds,revision}，当前 Run 范围内业务操作；Agent 不能调用 Human decide。                                                               |
+| POST /api/runs/:id/tool                                 | {tool,args,callId}，Pi 扩展或 CLI bridge；必须提供当前 Run 的 Bearer 凭据。宿主按实际 Run 绑定，callId 用于幂等，不信任模型自报范围。                   |
+| POST /api/actions                                       | 继续 {type,payload} → {result,revision}；下表约束。                                                                                                     |
+| GET /api/directories、/api/attachments/:id、/api/health | 保留真实目录、原附件和健康读取。                                                                                                                        |
 
 文档类型为 product/tech，正文 UTF-8、单文档最多1MB；不存在实体404，不属于项目 / Spec 的引用422；输入为空或非法400。已登记目录重新关联 / 升级只通过人工动作；不允许 Agent 借 report 绕过。
 
-actions 保留 issue.create/update/control、binding.save/remove、comment.create、attachment.create、notification.update、request.decide、run.reconcile、settings.save/test、agents.refresh。worktree.create 为 {projectId,name,path,branch,specId,specVersionId}；创建新 Spec 的表单改用同一动作的互斥分支 {projectId,name,path,branch,newSpec:{name}}，同事务创建空初始版本与 Worktree。不接受 specName/specDir 写文件。issue.control 的命令 start/pause/resume/stop/reopen；内部 final 与兼容外部 final 均须完整复核，不提供手工 UI。
+actions 保留 issue.create/update/control、binding.save/remove、comment.create、attachment.create、notification.update、request.decide、run.reconcile、settings.save/test、agents.refresh。worktree.create 为 {projectId,name,path,branch,specId,specVersionId}；创建新 Spec 的表单改用同一动作的互斥分支 {projectId,name,path,branch,newSpec:{name}}，同事务创建空初始版本与 Worktree。不接受 specName/specDir 写文件。issue.control 的命令 start/pause/resume/stop/reopen；final 仅由 Triage 创建并由 request.decide 验收，不提供手工 final 操作。
 
 request.decide={requestId,revision,decision:"answer"|"approve"|"changes"|"cancel",answer?}。组合升级仅由被冻结的 action 解释，不从回答中的“同意”猜测。run.reconcile={runId,outcome:"completed"|"failed"|"stopped",evidence}，只用于未知现场核查； completed 仍要回 Triage，不能直接 Done。
 
-错误：400 INVALID_INPUT / MATERIAL_UNREADABLE；404 NOT_FOUND；409 STALE_VERSION / SPEC_CONFLICT / SPEC_CONTRACT_CHANGED / REQUEST_RESOLVED / DEPENDENCY_BLOCKED / WORKTREE_BUSY / RESULT_UNKNOWN / IDEMPOTENCY_CONFLICT / DUPLICATE_BINDING；422 INVALID_REPOSITORY / BRANCH_MISMATCH / SPEC_PROJECT_MISMATCH；503 JEV_UNAVAILABLE / AGENT_UNAVAILABLE。409 保留输入与原请求，服务异常不返回秘密。
+错误：400 INVALID_INPUT / MATERIAL_UNREADABLE；404 NOT_FOUND；409 STALE_VERSION / SPEC_CONFLICT / REQUEST_RESOLVED / DEPENDENCY_BLOCKED / WORKTREE_BUSY / RESULT_UNKNOWN / IDEMPOTENCY_CONFLICT / DUPLICATE_BINDING；422 INVALID_REPOSITORY / BRANCH_MISMATCH / SPEC_PROJECT_MISMATCH；503 JEV_UNAVAILABLE / AGENT_UNAVAILABLE。409 保留输入与原请求，服务异常不返回秘密。
 
 原有 Spec 字段支持按项目搜索已有 Spec / 固定版本或输入新名创建，事务失败不留下孤立 Worktree；新 Spec + Worktree 提交用领域组合动作同事务保存，创建实体接口供其他调用使用。固定版本与草稿编辑状态在已有 Bound spec / 状态区域说明，不增独立版本面板。草稿按 specId/document 保存，600ms 防抖 CAS；系统确认才能展示保存成功。
 
@@ -395,50 +448,50 @@ UI 其余行为沿用 PRODUCT §10。Agent / Project Health 定期真实检查�
 
 ## 10. 恢复与一致性
 
-启动顺序：完成版本迁移 → 冻结未确认运行 / session → 恢复准确原生状态与待决原生请求 → 校正 stream item → 重新计算业务状态 / dirty → 开启 worker。未知运行或停止意图未确认时不释放目录占用或开替代 session。
+启动顺序：检查 schema3 → 冻结未确认运行 / session → 恢复准确原生状态与待决原生请求 → 校正 stream item → 重新计算业务状态 / dirty → 开启 worker。未知运行或停止意图未确认时不释放目录占用或开替代 session。
 
 持久 dirty 在派发启动事务中与 Evaluation.applied 一起处理；期间出现新触发保留待处理 revision，不能被旧确认清掉。HTTP 与原生终态同一 SQLite 串行事务；原生启动在事务外，starting + Session 身份先落盘，返回丢失按未知恢复。
 
 final、批准升级、关联请求答复、报告应用与通知状态均在单事务写入。外部动作与数据库无法构成同一事务，结果确认丢失按精确身份核查，不把幂等 key 当作原生命令去重能力。
 
-停止应用不自动回滚原生副作用，owned / external 服务所有权遵循 §7。现有未知历史在 migration / reconciliation 完成前保留，不借重构重跑用户工作。
+停止应用不自动回滚原生副作用，owned / external 服务所有权遵循 §7。现有未知历史在 reconciliation 完成前保留，不借重构重跑用户工作。
 
 ## 11. 验证
 
-验收编号与可观察结果统一定义于 [PRODUCT §11](product.md#11-验收场景)。下表给出验证入口、必要输入和内部断言；全部用于重构后的目标契约。规格阶段只检查文档，不运行应用或迁移用户数据。
+验收编号与可观察结果统一定义于 [PRODUCT §11](product.md#11-验收场景)。下表给出验证入口、必要输入和内部断言；全部用于重构后的目标契约。自动化与真实模型验证分别记录，不能用协议模拟代替真实模型验收。
 
 ### 11.1 自动化验证
 
 后端使用临时 SQLite / Git、可控原生 peers 和注入 Jev typed 响应；时间与故障可控，不依赖真实模型随机选择。每次失败同时检查事务内数据和原生调用计数，不能只断言错误文案。
 
-| 层级 / 编号 | 关键输入与操作 | 必须核验 |
-| --- | --- | --- |
-| domain/API / P01、P02 | 多 Spec、两个已有 Worktree、不同 pin；无 Spec / 跨项目 / 分支错误 / canonical 重复目录及 newSpec 组合动作。 | 正确归属、固定引用必填；非法输入无残留实体，组合创建同事务，Git 分支与文件不被改写。 |
-| specs/browser / P03 | 两目录关联同 specId；草稿 CAS 竞争、重载、修改同名本地文件。 | 数据库正文和 draftRevision 为权威；共享可见、冲突输入保留、历史版本 hash 与 pin 不变。 |
-| native/domain / P04 | spec 模式读取 / relay_report，随后尝试未批准的写入与命令；再使用有效批准启动。 | Codex 每 turn 的 sandboxPolicy、Pi active tools 与嵌套 tool_call 拦截实际生效；空 pair 不可批准，实现批准与 writableRoots 准确。 |
-| specs/domain / P05 | 冻结 V2 + 升级 W1；并发改变 fromVersion / revision，busy 与 unknown 各测一次。 | Request、批准及所有目标 pin 原子提交或回滚；W2 不变，受影响 Issue dirty，旧 Run.snapshot 不变。 |
-| worker / P06、P22 | 自然语言终态、无 tasks / JSON；当前已获批且可直接实现，另有不相关绑定。 | 真正终态令 dirty；重新询问动作 / mode / route，contextRef 准确；不强制 spec 阶段或遍历绑定，不因无 JSON 卡死 / 空队列完成。 |
-| worker/domain / P07 | 缺绑定请求后补齐；Agent / 目录恢复，业务审批仍 Pending。 | configuration 按 conditionKey 置 Resolved，实际条件变化触发一次评估；业务决定和其他依赖保持。 |
-| domain/worker / P08 | 活跃 Run 时 Pause，再保存决定、完成旧 Run、Resume。 | control 与主状态独立，旧执行可结束、暂停期间 launch 次数不增，Resume 使用新 evaluationRevision。 |
-| domain/worker / P09 | goal_complete 达标但有缺口 / unknown / 无批准；合法 final、changes、重新 final、旧确认。 | 硬条件失败无 final；自身 Pending 可被排除且仅排除自身，最终批准唯一 Done 入口；修订、新 Request 与冻结证据不复用旧决定。 |
-| store/native / P10、P27 | 同 Agent 多绑定 / 多 Issue、连续 Run、重启；改职责、移除、换 Agent / 目录。 | Issue.sessions 独立、准确 ID 复用；旧忙状态阻止更换，确认后归档建新范围；Run.sessionId 历史不改写。 |
-| Jev/context / P11 | 完整 state / questions，缺字段、NaN、错 type / choice / 概率和、低置信与动作矛盾；模型响应前改变目标 / pin / 绑定。 | 四个基本题与可选事项题参数准确；坏响应不派发，过期 Evaluation discarded，保存实际 typed answer；Agent 路由建议不能跳过 Jev。 |
-| context / P12 | 固定 V1、latest V2、待审草稿、旧原生历史、失效决定、附件不可读；必要输入超过256KB。 | Jev / Agent 两种快照各自字段正确，必要原文与范围齐备；无 latest 替换 pin、其他完整会话 / thinking / 秘密，容量不足明确阻塞。 |
-| native/streams/browser / P13 | Read / Exec 与 text / thinking delta 交错、多内容块及调用 ID，持续展开 / 收起。 | 一 Run 一顶层行，首次 seq 顺序与真实调用名称；参数、输出、状态和文本实时更新，不以每句 / delta 创建行，不重置展开。 |
-| native/SSE / P14 | Codex item 完成但 turn 未完成；Pi agent_end 后继续，最终 settled；快照订阅窗口、断线、重复最终消息、慢客户端、64KB超限。 | 仅整轮终态结束；SQLite seq 补发无遗漏，完整权威内容 replace，重复不重复摄入；无公开 thinking 不补造，超限明确，生产者不被阻塞。 |
-| domain/browser/native / P15 | Activity / Inbox 并发决定，未提交输入、已读 / 归档 / cancel、终端 resolved；唯一 / 同名 Agent 简称。 | 同 requestId 单次决定，空答复与歧义不改请求，草稿保留；原生 delivery 可核查，不产生业务批准，取消不授予权限。 |
-| domain/worker / P16 | 原工作有两个依赖，另一绑定回答原 requestId；无匹配者或答错 ID。 | 只解除关联输入，澄清任务仅豁免自己的请求；无匹配沿原请求升级 Human，不重复通知，不回答无关问题。 |
-| recovery/native / P17 | turn/start 回应丢失、失联 / 未确认停止后重启；原生分别报告 active / terminal / missing。 | 精确身份恢复、不重发 prompt；unknown 锁保留，已知终态只摄入一次，reconcile 无 evidence 拒绝。 |
-| native/domain / P18 | 同 Issue 两候选、两个 Issue 同 canonical path，终端活跃 turn 与原生额外 turn。 | 最多一个平台执行、目录锁互斥；外部观察 origin=terminal，不应用平台报告或当作 goal 完成；Pi 恢复不宣称并发 TUI 附着。 |
-| domain / P19 | Done 的迟到事件 / 评论 / pin 变化，空 Reopen、合法新目标、Resume。 | 保持 Done；空目标拒绝，合法 Reopen 增 targetRevision、新 goal、control=paused，历史不变。 |
-| browser/API / P20 | 在相同视口对照只读设计页面 / 弹窗，实际提交和失败、切换对象、搜索 / 偏好 / 统计。 | 布局只有已批准例外；不新增 task / artifact / session 入口，保存真实，输入隔离、去重统计与偏好正确，token 不更新业务排序。 |
-| specs/domain / P23 | V2 changes → V3 proposal；单批准 / 单升级、跨 Issue / scope 批准和无关草稿。 | 修订可执行而被拒版本不可实施；新版本独立批准，pin 与批准不可相互推断，适用授权只在准确范围有效。 |
-| report/API / P24 | 同 toolCallId 重送、同幂等键异内容、错误 draftRevision / specId / requestId，混入 Agent approve / pin / final。 | 报告原子应用或拒绝，无部分版本 / 请求；原生事实独立保存，同调用只发布一次，宿主不信任自报 runId。 |
-| domain/native / P25 | Stop 保存纠正，clear_queue / abort / interrupt 后停止确认丢失；核查后 Resume。 | stopping 与锁保持到准确确认；纠正不成为 stop 任务，原地副作用保留，stopResolved 后上下文只保留业务纠正和历史停止。 |
-| worker/store / P26 | 多触发合并，等待期间轮询 / 重启；实际条件恢复；仅 token / 已读 / 草稿变化。 | dirty 与 triggerIds 持久化，旧应用不能清掉新触发；条件恢复才评估，无新事实不重复模型 / 请求 / Run。 |
-| migration / P28 | schema2 备份及 session / Run 精确关联；旧同名不同路径、共享来源、文件缺失、不可读、孤立 session、无对应原文批准。 | schema3 原子回填或整体回滚；只在准确来源时去重，missing 标明，不猜身份 / 批准，不释放 unknown 锁或启动 Agent。 |
-| worker/native / P29 | Jev 网络 / 429 / 5xx 与401 / 422，超时；明确失败 / 无 JSON / unknown；3轮无进展及8 / 64次、30分钟边界。 | 暂时错误有限重试、认证错误不重试；等待结构可恢复，未知不重放，无 JSON 不冒作失败；限额产生可定位请求，证据来源真实。 |
-| HTTP/context / P30 | 同源与跨源写入、同键重试 / 异请求；公开 state、流和两种 prompt，超限输入 / 附件。 | 同源允许、跨源拒绝，同键返回原结果 / 异请求409；无密钥 / 认证泄露，超限错误明确，不静默裁去审批正文。 |
+| 层级 / 编号                  | 关键输入与操作                                                                                                           | 必须核验                                                                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| domain/API / P01、P02        | 多 Spec、两个已有 Worktree、不同 pin；无 Spec / 跨项目 / 分支错误 / canonical 重复目录及 newSpec 组合动作。              | 正确归属、固定引用必填；非法输入无残留实体，组合创建同事务，Git 分支与文件不被改写。                                                    |
+| specs/browser / P03          | 两目录关联同 specId；草稿 CAS 竞争、重载、修改同名本地文件。                                                             | 数据库正文和 draftRevision 为权威；共享可见、冲突输入保留、历史版本 hash 与 pin 不变。                                                  |
+| native/domain / P04          | spec 模式读取 / relay_report，随后尝试未批准的写入与命令；再使用有效批准启动。                                           | Codex 每 turn 的 sandboxPolicy、Pi active tools 与嵌套 tool_call 拦截实际生效；空 pair 不可批准，实现批准与 writableRoots 准确。        |
+| specs/domain / P05           | 冻结 V2 + 升级 W1；并发改变 fromVersion / revision，busy 与 unknown 各测一次。                                           | Request、批准及所有目标 pin 原子提交或回滚；W2 不变，受影响 Issue dirty，旧 Run.snapshot 不变。                                         |
+| worker / P06、P22            | 自然语言终态、无 tasks / JSON；当前已获批且可直接实现，另有不相关绑定。                                                  | 真正终态令 dirty；重新询问动作 / mode / route，contextRef 准确；不强制 spec 阶段或遍历绑定，不因无 JSON 卡死 / 空队列完成。             |
+| worker/domain / P07          | 缺绑定请求后补齐；Agent / 目录恢复，业务审批仍 Pending。                                                                 | configuration 按 conditionKey 置 Resolved，实际条件变化触发一次评估；业务决定和其他依赖保持。                                           |
+| domain/worker / P08          | 活跃 Run 时 Pause，再保存决定、完成旧 Run、Resume。                                                                      | control 与主状态独立，旧执行可结束、暂停期间 launch 次数不增，Resume 使用新 evaluationRevision。                                        |
+| domain/worker / P09          | goal_complete 达标但有缺口 / unknown / 无批准；合法 final、changes、重新 final、旧确认。                                 | 硬条件失败无 final；自身 Pending 可被排除且仅排除自身，最终批准唯一 Done 入口；修订、新 Request 与冻结证据不复用旧决定。                |
+| store/native / P10、P27      | 同 Agent 多绑定 / 多 Issue、连续 Run、重启；改职责、移除、换 Agent / 目录。                                              | Issue.sessions 独立、准确 ID 复用；旧忙状态阻止更换，确认后归档建新范围；Run.sessionId 历史不改写。                                     |
+| Jev/context / P11            | 完整 state / questions，缺字段、NaN、错 type / choice / 概率和、低置信与动作矛盾；模型响应前改变目标 / pin / 绑定。      | 四个基本题与可选事项题参数准确；坏响应不派发并保留原始 typed answer 与失败原因，过期 Evaluation discarded；Agent 路由建议不能跳过 Jev。 |
+| context / P12                | 固定 V1、latest V2、待审草稿、旧原生历史、失效决定、附件不可读；必要输入超过256KB。                                      | Jev / Agent 两种快照各自字段正确，必要原文与范围齐备；无 latest 替换 pin、其他完整会话 / thinking / 秘密，容量不足明确阻塞。            |
+| native/streams/browser / P13 | Read / Exec 与 text / thinking delta 交错、多内容块及调用 ID，持续展开 / 收起。                                          | 一 Run 一顶层行，首次 seq 顺序与真实调用名称；参数、输出、状态和文本实时更新，不以每句 / delta 创建行，不重置展开。                     |
+| native/SSE / P14             | Codex item 完成但 turn 未完成；Pi agent_end 后继续，最终 settled；快照订阅窗口、断线、重复最终消息、慢客户端、64KB超限。 | 仅整轮终态结束；SQLite seq 补发无遗漏，完整权威内容 replace，重复不重复摄入；无公开 thinking 不补造，超限明确，生产者不被阻塞。         |
+| domain/browser/native / P15  | Activity / Inbox 并发决定，未提交输入、已读 / 归档 / cancel、终端 resolved；唯一 / 同名 Agent 简称。                     | 同 requestId 单次决定，空答复与歧义不改请求，草稿保留；原生 delivery 可核查，不产生业务批准，取消不授予权限。                           |
+| domain/worker / P16          | 原工作有两个依赖，另一绑定回答原 requestId；无匹配者或答错 ID。                                                          | 只解除关联输入，澄清任务仅豁免自己的请求；无匹配沿原请求升级 Human，不重复通知，不回答无关问题。                                        |
+| recovery/native / P17        | turn/start 回应丢失、失联 / 未确认停止后重启；原生分别报告 active / terminal / missing。                                 | 精确身份恢复、不重发 prompt；unknown 锁保留，已知终态只摄入一次，reconcile 无 evidence 拒绝。                                           |
+| native/domain / P18          | 同 Issue 两候选、两个 Issue 同 canonical path，终端活跃 turn 与原生额外 turn。                                           | 最多一个平台执行、目录锁互斥；外部观察 origin=terminal，不应用平台报告或当作 goal 完成；Pi 恢复不宣称并发 TUI 附着。                    |
+| domain / P19                 | Done 的迟到事件 / 评论 / pin 变化，空 Reopen、合法新目标、Resume。                                                       | 保持 Done；空目标拒绝，合法 Reopen 增 targetRevision、新 goal、control=paused，历史不变。                                               |
+| browser/API / P20            | 在相同视口对照只读设计页面 / 弹窗，实际提交和失败、切换对象、搜索 / 偏好 / 统计。                                        | 布局只有已批准例外；不新增 task / artifact / session 入口，保存真实，输入隔离、去重统计与偏好正确，token 不更新业务排序。               |
+| specs/domain / P23           | V2 changes → V3 proposal；单批准 / 单升级、跨 Issue / scope 批准和无关草稿。                                             | 修订可执行而被拒版本不可实施；新版本独立批准，pin 与批准不可相互推断，适用授权只在准确范围有效。                                        |
+| report/API / P24             | 同 toolCallId 重送、同幂等键异内容、错误 draftRevision / specId / requestId，混入 Agent approve / pin / final。          | 报告原子应用或拒绝，无部分版本 / 请求；原生事实独立保存，同调用只发布一次，宿主不信任自报 runId。                                       |
+| domain/native / P25          | Stop 保存纠正，clear_queue / abort / interrupt 后停止确认丢失；核查后 Resume。                                           | stopping 与锁保持到准确确认；纠正不成为 stop 任务，原地副作用保留，stopResolved 后上下文只保留业务纠正和历史停止。                      |
+| worker/store / P26           | 多触发合并，等待期间轮询 / 重启；实际条件恢复；仅 token / 已读 / 草稿变化。                                              | dirty 与 triggerIds 持久化，旧应用不能清掉新触发；条件恢复才评估，无新事实不重复模型 / 请求 / Run。                                     |
+| reset/store / P28            | 停止服务、重建应用 SQLite，再用新库启动；保留密钥和原生历史，尝试直接打开旧 schema。                                     | schema3 业务、幂等、锁和过程集合全空；旧 schema 拒绝启动；不迁移或补造绑定、会话与批准。                                                |
+| worker/native / P29          | Jev 网络 / 429 / 5xx 与401 / 422，超时；明确失败 / 无 JSON / unknown；3轮无进展及8 / 64次、30分钟边界。                  | 暂时错误有限重试、认证错误不重试；等待结构可恢复，未知不重放，无 JSON 不冒作失败；限额产生可定位请求，证据来源真实。                    |
+| HTTP/context / P30           | 同源与跨源写入、同键重试 / 异请求；公开 state、流和两种 prompt，超限输入 / 附件。                                        | 同源允许、跨源拒绝，同键返回原结果 / 异请求409；无密钥 / 认证泄露，超限错误明确，不静默裁去审批正文。                                   |
 
 ### 11.2 真实端到端验收
 
@@ -450,10 +503,10 @@ P22 再使用已有、范围准确的获批版本完成一个可直接实现的�
 
 ### 11.3 现有测试的调整边界
 
-| 现有位置 | 与本版契约的对应 |
-| --- | --- |
-| tests/core.test.ts：spec CAS、missing bound material、malformed handoff、自动交接链 | 将本地文件 Spec 的断言替换为系统草稿 / 固定版本；自然语言终态必须返回 Triage，完整链不能依赖 Agent 返回 tasks 或空队列验收。报告字段错误仍验证原子拒绝，但不把原生事实清空或强制永久人工阻塞。 |
-| tests/core.test.ts：Pi filters reasoning、failure recovery；tests/native.test.ts：session / migration | 改为公开 thinking 流式持久化、共享输入不传 thinking；恢复按结构化条件判定，不能要求 reason 文案。session 从 Issue 记录读取，保留旧迁移测试并新增 schema2 → 3，核验未知运行原锁及历史引用。 |
-| tests/activity.test.ts、scripts/browser-test.mjs | 保留单 Run 聚合和独立请求，新增真实增量 / SSE 及生命周期输入；Spec 保存断言改为系统持久化、共享与 CAS，不再要求写本地 docs 文件。布局比较覆盖原设计页面和已批准交互；完整移动端与未批准入口不列为本版验收。 |
+| 现有位置                                                                                              | 与本版契约的对应                                                                                                                                                                                            |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| tests/core.test.ts：spec CAS、missing bound material、malformed handoff、自动交接链                   | 将本地文件 Spec 的断言替换为系统草稿 / 固定版本；自然语言终态必须返回 Triage，完整链不能依赖 Agent 返回 tasks 或空队列验收。报告字段错误仍验证原子拒绝，但不把原生事实清空或强制永久人工阻塞。              |
+| tests/core.test.ts：Pi filters reasoning、failure recovery；tests/native.test.ts：session / migration | 改为公开 thinking 流式持久化、共享输入不传 thinking；恢复按结构化条件判定，不能要求 reason 文案。session 从 Issue 记录读取，替换旧迁移测试为清库初始化和旧 schema 拒绝启动，核验未知运行原锁及历史引用。    |
+| tests/activity.test.ts、scripts/browser-test.mjs                                                      | 保留单 Run 聚合和独立请求，新增真实增量 / SSE 及生命周期输入；Spec 保存断言改为系统持久化、共享与 CAS，不再要求写本地 docs 文件。布局比较覆盖原设计页面和已批准交互；完整移动端与未批准入口不列为本版验收。 |
 
 构建验证 TypeScript 与生产打包；自动化记录与真实端到端记录分别标明实际执行范围。未执行 P21 / 真实互通时，不能用 mock 或既有测试通过宣称整套目标设计已经验收。
