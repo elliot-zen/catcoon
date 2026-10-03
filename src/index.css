@@ -1,0 +1,203 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #ffffff;
+  --color-foreground: #18181b;
+  --color-card: #ffffff;
+  --color-canvas: #fafafa;
+  --color-muted: #f4f4f5;
+  --color-muted-foreground: #71717a;
+  --color-accent: #ececee;
+  --color-border: #e4e4e7;
+  --color-ring: #a1a1aa;
+  --color-sidebar: #f7f7f8;
+  --color-sidebar-accent: #e9e9eb;
+  --color-sidebar-border: #e6e6e8;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.04);
+}
+
+.dark {
+  --color-background: #18181b;
+  --color-foreground: #f4f4f5;
+  --color-card: #202023;
+  --color-canvas: #18181b;
+  --color-muted: #29292d;
+  --color-muted-foreground: #a1a1aa;
+  --color-accent: #303034;
+  --color-border: #343438;
+  --color-ring: #71717a;
+  --color-sidebar: #202023;
+  --color-sidebar-accent: #303034;
+  --color-sidebar-border: #343438;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.24);
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html {
+  background: var(--color-background);
+}
+
+.dark .bg-zinc-50,
+.dark .bg-zinc-100 {
+  background-color: #29292d;
+}
+
+.dark .bg-zinc-100\/70,
+.dark .bg-zinc-100\/80,
+.dark .bg-zinc-200\/70 {
+  background-color: rgb(48 48 52 / 0.8);
+}
+
+.dark .hover\:bg-zinc-50:hover,
+.dark .hover\:bg-zinc-100\/70:hover {
+  background-color: #29292d;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+::selection {
+  background: #e9d5ff;
+  color: #3b0764;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #d4d4d8;
+  background-clip: padding-box;
+}
+@layer components {
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+  input,
+  select {
+    min-width: 0;
+  }
+  select option {
+    background: var(--color-card);
+  }
+  button:disabled {
+    opacity: 0.45;
+  }
+  button:focus-visible,
+  a:focus-visible {
+    outline: 2px solid #a78bfa;
+    outline-offset: 2px;
+  }
+  pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  input[type="checkbox"] {
+    accent-color: #7c3aed;
+  }
+  summary {
+    cursor: pointer;
+  }
+  body {
+    font-size: 13px;
+  }
+  .field {
+    width: 100%;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-background);
+    padding: 9px 11px;
+    outline: none;
+  }
+  .field:focus {
+    border-color: #a78bfa;
+  }
+  .muted {
+    color: var(--color-muted-foreground);
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border-radius: 5px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--color-muted-foreground);
+  }
+  .btn:hover {
+    background: var(--color-muted);
+    color: var(--color-foreground);
+  }
+  .btn.outline {
+    border: 1px solid var(--color-border);
+    color: var(--color-foreground);
+  }
+  .btn.primary {
+    background: var(--color-foreground);
+    color: var(--color-background);
+  }
+  .btn.primary:hover {
+    opacity: 0.85;
+  }
+  .btn.danger {
+    color: #e11d48;
+  }
+  .empty {
+    padding: 60px 20px;
+    text-align: center;
+    color: var(--color-muted-foreground);
+  }
+  .badge {
+    border-radius: 4px;
+    background: var(--color-muted);
+    padding: 2px 6px;
+    font-size: 11px;
+  }
+  .timeline {
+    position: relative;
+  }
+  .timeline:before {
+    content: "";
+    position: absolute;
+    left: 11px;
+    top: 12px;
+    bottom: 12px;
+    width: 1px;
+    background: var(--color-border);
+  }
+}
