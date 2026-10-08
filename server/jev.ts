@@ -55,7 +55,7 @@ export class Jev {
       );
     const body = (await response.json()) as any;
     const answer = answerSchema.parse(body.answers?.decision);
-    if (!(answer.choice in criteria))
+    if (!Object.hasOwn(criteria, answer.choice))
       throw new Error("Jev selected an unknown option.");
     return answer;
   }
@@ -85,9 +85,11 @@ export class Jev {
       };
     const next = await this.choose(
       state,
-      "Choose the next step for this issue. A completed agent turn is not proof that the whole goal is met. Respect human rejections and all binding responsibilities. Choose done only when results demonstrate the entire goal is satisfied; choose human when a user decision or clarification is necessary.",
+      "Choose the next step for this issue. A completed agent turn is not proof that the whole goal is met. Respect human rejections and all binding responsibilities. Choose a bound agent ID directly when its role matches unfinished work; consider previous results and human feedback and do not repeat completed work. Choose done only when results demonstrate the entire goal is satisfied; choose human when a user decision or clarification is necessary.",
       {
-        agent: "More work can be performed by a bound agent.",
+        ...Object.fromEntries(
+          d.bindings.map((b) => [b.id, `${b.name}: ${b.role}`]),
+        ),
         human: "Human judgment, approval, or missing information is required.",
         done: "All goals have been demonstrably completed, including any required review.",
       },
@@ -108,21 +110,9 @@ export class Jev {
       };
     if (next.choice === "done")
       return { action: "done", detail: d.turns.at(-1)?.output || "" };
-    const selected = await this.choose(
-      state,
-      "Select the bound agent whose role best matches the next unfinished work. Consider previous results and human feedback; do not repeat already completed work.",
-      Object.fromEntries(d.bindings.map((b) => [b.id, `${b.name}: ${b.role}`])),
-      signal,
-    );
-    if (selected.confidence < Number(process.env.JEV_MIN_CONFIDENCE || 0.65))
-      return {
-        action: "human",
-        detail:
-          "No agent could be selected confidently. Clarify the next task or update the bindings after stopping.",
-      };
     return {
       action: "agent",
-      bindingId: selected.choice,
+      bindingId: next.choice,
       detail:
         "Continue the unfinished work within your binding responsibilities using the issue goal, prior results, and human decisions below.",
     };

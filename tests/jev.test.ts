@@ -25,7 +25,7 @@ test("Jev uses documented Choice payload and selects only provided binding IDs",
         JSON.stringify({
           answers: {
             decision: {
-              choice: calls.length === 1 ? "agent" : "pi",
+              choice: "pi",
               confidence: 0.9,
             },
           },
@@ -41,10 +41,14 @@ test("Jev uses documented Choice payload and selects only provided binding IDs",
     assert.equal(decision.action, "agent");
     assert.equal((decision as any).bindingId, "pi");
     assert.equal(calls[0].questions.decision.type, "choice");
-    assert.deepEqual(Object.keys(calls[1].questions.decision.criteria), [
+    assert.deepEqual(Object.keys(calls[0].questions.decision.criteria), [
       "codex",
       "pi",
+      "human",
+      "done",
     ]);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].questions.decision.criteria.pi, "Pi: Review");
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
@@ -54,4 +58,31 @@ test("missing Jev key fails explicitly", async () => {
     new Jev("").route(detail, new AbortController().signal),
     /TYPESAFE_API_KEY/,
   );
+});
+
+test("unified routing handles human, done, low confidence and rejects unknown choices", async () => {
+  let choice = "human";
+  let confidence = 0.9;
+  const server = createServer((_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ answers: { decision: { choice, confidence } } }));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const j = new Jev("test", `http://127.0.0.1:${(server.address() as any).port}`);
+    const route = () => j.route(detail, new AbortController().signal);
+    assert.equal((await route()).action, "human");
+    choice = "done";
+    assert.equal((await route()).action, "done");
+    choice = "pi";
+    confidence = 0;
+    assert.equal((await route()).action, "human");
+    confidence = 0.9;
+    for (const unknown of ["agent", "unbound", "toString"]) {
+      choice = unknown;
+      await assert.rejects(route(), /unknown option/);
+    }
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
 });
