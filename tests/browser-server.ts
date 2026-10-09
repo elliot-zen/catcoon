@@ -37,6 +37,13 @@ const engine = new Orchestrator(
       },
       dispose: () => clearTimeout(timer),
     };
+    if (b.approvalLevel === "automatic") {
+      timer = setTimeout(() => {
+        cb.complete("Automatic work completed.");
+        cb.closed();
+      }, 1500);
+      return handle;
+    }
     timer = setTimeout(() => {
       cb.message(
         "assistant_delta",

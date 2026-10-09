@@ -27,6 +27,7 @@ for (const [name, factory] of [
         issueId: "smoke",
         name,
         runtime: name,
+        approvalLevel: name === "pi" ? "strict" : "on-request",
         role: "Read-only smoke test",
         cwd: dir,
         model: "",

@@ -8,6 +8,7 @@ export type Status =
   | "stopped"
   | "done";
 export type Runtime = "codex" | "pi";
+export type ApprovalLevel = "strict" | "on-request" | "automatic";
 export interface Issue {
   id: string;
   title: string;
@@ -25,6 +26,7 @@ export interface Binding {
   issueId: string;
   name: string;
   runtime: Runtime;
+  approvalLevel: ApprovalLevel;
   role: string;
   cwd: string;
   model: string;

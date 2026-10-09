@@ -663,6 +663,28 @@ tbody tr:hover {
   font-weight: 400;
   border-radius: 10px;
 }
+.binding-settings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.binding-settings button {
+  font-size: 12px;
+}
+.approval-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.approval-field p {
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--muted);
+}
 .agent-binding > div {
   display: flex;
   align-items: center;

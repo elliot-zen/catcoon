@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import type { Decision, Detail } from "./types.js";
 const answerSchema = z.object({
   choice: z.string(),
@@ -36,28 +37,72 @@ export class Jev {
   ) {
     if (!this.key)
       throw new Error("Set TYPESAFE_API_KEY in .env to enable Jev routing.");
-    const response = await fetch(this.endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: process.env.JEV_MODEL || "jev-latest",
-        state: JSON.stringify(state),
-        questions: { decision: { type: "choice", instructions, criteria } },
-      }),
-      signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]),
-    });
-    if (!response.ok)
-      throw new Error(
-        `Jev request failed (${response.status}). Check configuration and service availability.`,
+    const requestId = randomUUID();
+    const started = performance.now();
+    const log = (
+      event: string,
+      data: Record<string, unknown>,
+      failed = false,
+    ) => {
+      const entry = JSON.stringify({
+        timestamp: new Date().toISOString(),
+        requestId,
+        ...data,
+      });
+      // Do not log Authorization; also redact a key echoed in a response/error.
+      const redacted = entry.replaceAll(
+        JSON.stringify(this.key).slice(1, -1),
+        "[REDACTED]",
       );
-    const body = (await response.json()) as any;
-    const answer = answerSchema.parse(body.answers?.decision);
-    if (!Object.hasOwn(criteria, answer.choice))
-      throw new Error("Jev selected an unknown option.");
-    return answer;
+      (failed ? console.error : console.log)(`[Jev ${event}] ${redacted}`);
+    };
+    const payload = {
+      model: process.env.JEV_MODEL || "jev-latest",
+      state: JSON.stringify(state),
+      questions: { decision: { type: "choice", instructions, criteria } },
+    };
+    log("request", { method: "POST", url: this.endpoint, body: payload });
+    try {
+      const response = await fetch(this.endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]),
+      });
+      const rawBody = await response.text();
+      log("response", {
+        status: response.status,
+        statusText: response.statusText,
+        durationMs: Math.round(performance.now() - started),
+        body: rawBody,
+      });
+      if (!response.ok)
+        throw new Error(
+          `Jev request failed (${response.status}). Check configuration and service availability.`,
+        );
+      const body = JSON.parse(rawBody);
+      const answer = answerSchema.parse(body.answers?.decision);
+      if (!Object.hasOwn(criteria, answer.choice))
+        throw new Error("Jev selected an unknown option.");
+      return answer;
+    } catch (error) {
+      log(
+        "error",
+        {
+          durationMs: Math.round(performance.now() - started),
+          message: error instanceof Error ? error.message : String(error),
+          cause:
+            error instanceof Error && error.cause instanceof Error
+              ? error.cause.message
+              : undefined,
+        },
+        true,
+      );
+      throw error;
+    }
   }
   async route(d: Detail, signal: AbortSignal): Promise<Decision> {
     const state = routeState(d);

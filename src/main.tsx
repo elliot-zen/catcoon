@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type {
   Activity,
+  ApprovalLevel,
   Binding,
   Detail,
   HumanRequest,
@@ -9,6 +10,12 @@ import type {
   Status,
   Turn,
 } from "../server/types";
+import {
+  approvalDescriptions,
+  approvalLabels,
+  approvalLevels,
+  defaultApprovalLevel,
+} from "../server/approval";
 import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 import "./style.css";
@@ -613,31 +620,53 @@ function App() {
                     const active =
                       hasHistory && (currentAgent?.id === b.id || index === 0);
                     return (
-                      <button
-                        key={b.id}
-                        className={`agent-binding ${active ? "active-binding" : ""}`}
-                        aria-label={
-                          hasHistory
-                            ? `Open ${b.name} session`
-                            : `Edit ${b.name} binding`
-                        }
-                        onClick={() =>
-                          hasHistory ? setSession(b.id) : openBinding(b)
-                        }
-                      >
-                        <div>
-                          <strong>{b.name}</strong>
-                          {active && (
-                            <span>
-                              {currentAgent?.id === b.id &&
-                              detail.status === "running"
-                                ? "Running"
-                                : "Idle"}
-                            </span>
-                          )}
+                      <div key={b.id} className="binding-entry">
+                        <button
+                          className={`agent-binding ${active ? "active-binding" : ""}`}
+                          aria-label={
+                            hasHistory
+                              ? `Open ${b.name} session`
+                              : `Configure ${b.name} binding`
+                          }
+                          onClick={() =>
+                            hasHistory ? setSession(b.id) : openBinding(b)
+                          }
+                        >
+                          <div>
+                            <strong>{b.name}</strong>
+                            {active && (
+                              <span>
+                                {currentAgent?.id === b.id &&
+                                detail.status === "running"
+                                  ? "Running"
+                                  : "Idle"}
+                              </span>
+                            )}
+                          </div>
+                          <p>{b.role}</p>
+                        </button>
+                        <div className="binding-settings">
+                          <span>
+                            Approval ·{" "}
+                            {
+                              approvalLabels[
+                                b.approvalLevel ??
+                                  defaultApprovalLevel(b.runtime)
+                              ]
+                            }
+                          </span>
+                          <button
+                            className="plain"
+                            aria-label={`Edit ${b.name} binding`}
+                            disabled={
+                              !editable(detail.status) || !!pending || busy
+                            }
+                            onClick={() => openBinding(b)}
+                          >
+                            Edit
+                          </button>
                         </div>
-                        <p>{b.role}</p>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -783,11 +812,15 @@ function BindingForm({
   submit: (data: unknown) => void;
 }) {
   const [runtime, setRuntime] = useState(initial?.runtime || "codex"),
-    [role, setRole] = useState(initial?.role || "");
+    [role, setRole] = useState(initial?.role || ""),
+    [approvalLevel, setApprovalLevel] = useState<ApprovalLevel>(
+      initial?.approvalLevel ??
+        defaultApprovalLevel(initial?.runtime || "codex"),
+    );
   return (
     <>
       <p className="dialog-description">
-        Add an agent to this Issue and describe its responsibility.
+        Configure an agent’s responsibility and approval level for this Issue.
       </p>
       <form
         className="dialog-form"
@@ -795,6 +828,7 @@ function BindingForm({
           e.preventDefault();
           submit({
             runtime,
+            approvalLevel,
             role,
             name:
               initial?.runtime === runtime
@@ -813,7 +847,15 @@ function BindingForm({
             <select
               value={runtime}
               disabled={!canEdit || busy}
-              onChange={(e) => setRuntime(e.target.value as "codex" | "pi")}
+              onChange={(e) => {
+                const next = e.target.value as "codex" | "pi";
+                setRuntime(next);
+                setApprovalLevel(
+                  initial?.runtime === next
+                    ? (initial.approvalLevel ?? defaultApprovalLevel(next))
+                    : defaultApprovalLevel(next),
+                );
+              }}
             >
               <option value="codex">Codex</option>
               <option value="pi">Pi</option>
@@ -831,6 +873,37 @@ function BindingForm({
             onChange={(e) => setRole(e.target.value)}
           />
         </label>
+        <div className="approval-field">
+          <label>
+            Approval level
+            <div className="select-field">
+              <select
+                value={approvalLevel}
+                aria-label="Approval level"
+                disabled={!canEdit || busy}
+                aria-describedby="approval-description approval-runtime"
+                onChange={(e) =>
+                  setApprovalLevel(e.target.value as ApprovalLevel)
+                }
+              >
+                {approvalLevels.map((level) => (
+                  <option key={level} value={level}>
+                    {approvalLabels[level]}
+                  </option>
+                ))}
+              </select>
+              <Icon name="chevron-down" />
+            </div>
+          </label>
+          <p id="approval-description">
+            {approvalDescriptions[runtime][approvalLevel]}
+          </p>
+          <p id="approval-runtime">
+            {runtime === "codex"
+              ? "Codex · Sandbox restrictions remain enabled."
+              : "Pi · Tools use the permissions of the running environment."}
+          </p>
+        </div>
         <div className="dialog-actions">
           <button type="button" onClick={close}>
             Cancel

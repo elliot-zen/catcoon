@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { Binding, RuntimeCallbacks, RuntimeHandle } from "../types.js";
 import { JsonProcess } from "./process.js";
+import { defaultApprovalLevel } from "../approval.js";
 export function pi(
   binding: Binding,
   prompt: string,
@@ -21,7 +22,10 @@ export function pi(
     resolve("server/runtime/pi-approval.ts"),
   ];
   if (binding.model) args.push("--model", binding.model);
-  const rpc = new JsonProcess(process.env.PI_BIN || "pi", args, binding.cwd);
+  const rpc = new JsonProcess(process.env.PI_BIN || "pi", args, binding.cwd, {
+    ...process.env,
+    CATCOON_APPROVAL_LEVEL: binding.approvalLevel ?? defaultApprovalLevel("pi"),
+  });
   let finished = false,
     stopping = false,
     output = "",

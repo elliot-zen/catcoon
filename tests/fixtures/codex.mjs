@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 let buffer = "",
-  approved = false;
+  policy = "";
 const emit = (m) => process.stdout.write(JSON.stringify(m) + "\n");
 process.stdin.on("data", (c) => {
   buffer += c;
@@ -12,9 +12,14 @@ process.stdin.on("data", (c) => {
     else if (m.method === "thread/start" || m.method === "thread/resume") {
       if (
         m.params.approvalsReviewer !== "user" ||
-        m.params.sandbox !== "workspace-write"
+        !["workspace-write", "read-only"].includes(m.params.sandbox)
       )
         process.exit(2);
+      policy = m.params.approvalPolicy;
+      emit({
+        method: "item/completed",
+        params: { item: { type: "commandExecution", configuration: m.params } },
+      });
       emit({ id: m.id, result: { thread: { id: "test-thread" } } });
     } else if (m.method === "turn/start") {
       emit({ id: m.id, result: { turn: { id: "test-turn" } } });
@@ -22,18 +27,23 @@ process.stdin.on("data", (c) => {
         method: "item/agentMessage/delta",
         params: { delta: "Plan ready\u2028Unicode preserved." },
       });
-      emit({
-        id: "approve",
-        method: "item/commandExecution/requestApproval",
-        params: {
-          turnId: "test-turn",
-          threadId: "test-thread",
-          reason: "Run verification",
-          command: "npm test",
-        },
-      });
+      if (policy === "never") {
+        emit({
+          method: "turn/completed",
+          params: { turn: { status: "completed" } },
+        });
+      } else
+        emit({
+          id: "approve",
+          method: "item/commandExecution/requestApproval",
+          params: {
+            turnId: "test-turn",
+            threadId: "test-thread",
+            reason: "Run verification",
+            command: "npm test",
+          },
+        });
     } else if (m.id === "approve" && m.result) {
-      approved = true;
       emit({
         method: "item/completed",
         params: {

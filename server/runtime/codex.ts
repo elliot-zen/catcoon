@@ -1,5 +1,6 @@
 import type { Binding, RuntimeCallbacks, RuntimeHandle } from "../types.js";
 import { JsonProcess } from "./process.js";
+import { codexApprovalSettings, defaultApprovalLevel } from "../approval.js";
 export function codexAnswers(questions: { id: string }[], answer: string) {
   let values: Record<string, string[]>;
   try {
@@ -127,9 +128,9 @@ export function codex(
     if (stopping) return;
     const params = {
       cwd: binding.cwd,
-      approvalPolicy: "on-request",
-      approvalsReviewer: "user",
-      sandbox: "workspace-write",
+      ...codexApprovalSettings(
+        binding.approvalLevel ?? defaultApprovalLevel("codex"),
+      ),
       ...(binding.model ? { model: binding.model } : {}),
     };
     const r = await rpc.request(

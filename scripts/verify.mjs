@@ -55,16 +55,35 @@ try {
     );
   await page.getByRole("button", { name: "Create issue", exact: true }).click();
   await page.getByRole("button", { name: "+ Add", exact: true }).click();
+  assert.equal(
+    await page.getByLabel("Approval level", { exact: true }).inputValue(),
+    "on-request",
+  );
   await page
     .getByLabel("Agent description", { exact: true })
     .fill("Write the backend logic and verify the API.");
   await page.getByRole("button", { name: "Bind agent", exact: true }).click();
   await page.getByRole("button", { name: "+ Add", exact: true }).click();
   await page.getByLabel("Agent runtime").selectOption("pi");
+  assert.equal(
+    await page.getByLabel("Approval level", { exact: true }).inputValue(),
+    "strict",
+  );
+  await page
+    .getByLabel("Approval level", { exact: true })
+    .selectOption("on-request");
   await page
     .getByLabel("Agent description")
     .fill("Review the implementation and verify the complete happy path.");
   await page.getByRole("button", { name: "Bind agent", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Edit Pi binding", exact: true })
+    .click();
+  assert.equal(
+    await page.getByLabel("Approval level", { exact: true }).inputValue(),
+    "on-request",
+  );
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByRole("button", { name: "Start", exact: true }).click();
   await page.getByRole("button", { name: "Approve", exact: true }).waitFor();
   await page.screenshot({ path: "/tmp/catcoon-approval.png", fullPage: true });
@@ -117,9 +136,74 @@ try {
     "Mobile page must not overflow",
   );
   await page.screenshot({ path: "/tmp/catcoon-mobile.png", fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page
+    .getByRole("button", { name: "Issue", exact: true })
+    .first()
+    .click();
+  await page.getByRole("button", { name: /New issue/ }).click();
+  await page
+    .getByLabel("Title", { exact: true })
+    .fill("Change approval after execution");
+  await page
+    .getByLabel("Description", { exact: true })
+    .fill(
+      "Verify persisted approval settings and edit access with session history.",
+    );
+  await page.getByRole("button", { name: "Create issue", exact: true }).click();
+  await page.getByRole("button", { name: "+ Add", exact: true }).click();
+  await page
+    .getByLabel("Agent description", { exact: true })
+    .fill("Verify approval changes");
+  await page
+    .getByLabel("Approval level", { exact: true })
+    .selectOption("automatic");
+  await page.screenshot({
+    path: "/tmp/catcoon-binding-approval.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Bind agent", exact: true }).click();
+  await page.getByRole("button", { name: "Start", exact: true }).click();
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await page
+    .locator(".metadata .badge")
+    .filter({ hasText: "Stopped" })
+    .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Approve", exact: true }).count(),
+    0,
+  );
+  await page
+    .getByRole("button", { name: "Edit Codex binding", exact: true })
+    .click();
+  assert.equal(
+    await page.getByLabel("Approval level", { exact: true }).inputValue(),
+    "automatic",
+  );
+  await page
+    .getByLabel("Approval level", { exact: true })
+    .selectOption("strict");
+  await page.getByRole("button", { name: "Save binding", exact: true }).click();
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Edit Codex binding", exact: true })
+    .click();
+  assert.equal(
+    await page.getByLabel("Approval level", { exact: true }).inputValue(),
+    "strict",
+  );
+  await page.screenshot({
+    path: "/tmp/catcoon-binding-strict.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Start", exact: true }).click();
+  await page.getByRole("button", { name: "Approve", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await page.locator(".metadata .badge").filter({ hasText: "Done" }).waitFor();
   assert.deepEqual(errors, []);
   console.log(
-    "Browser happy path passed: create → bind Codex/Pi → Start → approval → Stop/Start → approve → handoff → Done; session history, search, mobile layout.",
+    "Browser happy path passed: create → bind Codex/Pi → Start → approval → Stop/Start → approve → handoff → Done; session history, search, mobile layout; approval defaults, automatic execution, edit after history, persisted strict approval.",
   );
 } finally {
   await browser?.close();

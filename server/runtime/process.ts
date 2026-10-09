@@ -16,12 +16,12 @@ export class JsonProcess {
   onMessage: (m: any) => void = () => {};
   onClose: () => void = () => {};
   onError: (e: Error) => void = () => {};
-  constructor(command: string, args: string[], cwd: string) {
+  constructor(command: string, args: string[], cwd: string, env = process.env) {
     this.child = spawn(command, args, {
       cwd,
       stdio: "pipe",
       detached: process.platform !== "win32",
-      env: process.env,
+      env,
     });
     const decoder = new StringDecoder("utf8");
     let buffer = "";

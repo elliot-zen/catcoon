@@ -17,12 +17,27 @@ process.stdin.on("data", (c) => {
         },
       });
       emit({
-        type: "extension_ui_request",
-        id: "approve",
-        method: "confirm",
-        title: "Approve write",
-        message: "Exact tool input",
+        type: "tool_execution_start",
+        approvalLevel: process.env.CATCOON_APPROVAL_LEVEL,
       });
+      if (process.env.CATCOON_APPROVAL_LEVEL === "automatic") {
+        emit({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "Automatic work finished." }],
+          },
+        });
+        emit({ type: "agent_settled" });
+      } else
+        emit({
+          type: "extension_ui_request",
+          id: "approve",
+          method: "confirm",
+          title: "Approve write",
+          message: "Exact tool input",
+        });
     } else if (m.type === "extension_ui_response") {
       emit({
         type: "message_end",

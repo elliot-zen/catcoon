@@ -32,6 +32,15 @@ export class Store {
  CREATE TABLE IF NOT EXISTS workers(id TEXT PRIMARY KEY REFERENCES turns(id),pid INTEGER NOT NULL,birth TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS turn_messages ON messages(turnId,id);
  `);
+    // Backfill only once so later user choices survive subsequent startups.
+    const columns = this.db.prepare("PRAGMA table_info(bindings)").all();
+    if (!columns.some((column) => column.name === "approvalLevel")) {
+      this.transaction(() => {
+        this.db
+          .exec(`ALTER TABLE bindings ADD COLUMN approvalLevel TEXT NOT NULL DEFAULT 'strict' CHECK(approvalLevel IN ('strict','on-request','automatic'));
+          UPDATE bindings SET approvalLevel='on-request' WHERE runtime='codex';`);
+      });
+    }
   }
   transaction<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");

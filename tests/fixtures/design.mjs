@@ -5,6 +5,7 @@ const binding = (id, name, role) => ({
   issueId: "AGT-128",
   name,
   runtime: name === "Pi" ? "pi" : "codex",
+  approvalLevel: name === "Pi" ? "strict" : "on-request",
   role,
   cwd: "/tmp",
   model: "",

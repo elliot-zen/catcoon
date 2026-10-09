@@ -73,7 +73,15 @@ npm start
 - `server/app.ts`：API 校验与 SSE。
 - `src/main.tsx`、`src/style.css`：列表、详情、绑定、人工决策与会话界面。
 
-Codex 使用 `workspace-write` sandbox 与 `on-request` 审批策略，不开启自动代批。Pi 第一版关闭自动发现的扩展，显式加载 Catcoon 扩展，在 `bash`、`write`、`edit` 执行前通过原生 RPC confirm 请求 Human 批准；读取操作直接执行。Pi 的审批门不是操作系统 sandbox。
+Binding agent 可选择三档审批，每个绑定独立保存。已有绑定自动迁移为原来的默认行为：Codex 按需、Pi 严格。停止 Issue 并处理未决请求后，可通过绑定卡片的 Edit 修改级别，下次运行生效，会话历史保留。
+
+| 级别 | Codex | Pi |
+| --- | --- | --- |
+| Strict / 严格 | `read-only` + `on-request`，需要额外权限的操作（包括文件修改）请求审批 | 每次 shell、写入、编辑和其他非只读工具调用请求审批 |
+| On request / 按需 | `workspace-write` + `on-request`，工作区内常规操作直接执行，额外权限由 Codex 发起审批 | 工作区内 write/edit 和简单只读命令 `pwd/ls/cat/head/tail/wc` 直接执行，其他 shell、工作区外写入及未知工具请求审批 |
+| Automatic / 自动 | `workspace-write` + `never`，无审批提示，沙箱仍限制操作 | 无工具审批提示，沿用 Pi 进程的系统权限 |
+
+Pi 显式加载 Catcoon 审批扩展，关闭自动发现的扩展。只读工具 `read/grep/find/ls` 在各档直接执行；按需模式的 shell 仅放行上述单条命令，重定向、命令组合、替换和转义均需审批。工作区路径检查包含符号链接，但审批门不是操作系统 sandbox。三档均保留 Agent 的人工补充信息请求。
 
 ## 配置与数据
 
@@ -90,6 +98,8 @@ Codex 使用 `workspace-write` sandbox 与 `on-request` 审批策略，不开启
 | `CODEX_BIN` / `PI_BIN` | `codex` / `pi`；可以指定可执行文件绝对路径 |
 
 数据库为 `.data/catcoon.sqlite`，Pi 会话为 `.data/sessions/`。Codex thread 由 Codex 自己保存，数据库记录其 ID。不要同时启动两个使用相同 `DATA_DIR` 的服务；服务锁会阻止重复启动。
+
+Jev 调用默认在服务终端打印 `[Jev request]`、`[Jev response]` 和失败时的 `[Jev error]` 日志。同一调用通过 `requestId` 关联，包含请求地址与完整请求体、原始响应体、HTTP 状态和耗时；网络、超时及解析错误也会记录。Authorization 不打印，API Key 在日志中脱敏。
 
 ## 验证
 

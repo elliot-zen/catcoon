@@ -5,6 +5,7 @@ import { Store, uid, now } from "./store.js";
 import { Jev, routeState } from "./jev.js";
 import { codex, codexAnswers } from "./runtime/codex.js";
 import { pi } from "./runtime/pi.js";
+import { defaultApprovalLevel } from "./approval.js";
 import type {
   Binding,
   Decision,
@@ -112,19 +113,27 @@ export class Orchestrator extends EventEmitter {
   }
   bind(
     id: string,
-    data: Pick<Binding, "name" | "runtime" | "role" | "cwd" | "model">,
+    data: Pick<Binding, "name" | "runtime" | "role" | "cwd" | "model"> &
+      Partial<Pick<Binding, "approvalLevel">>,
     bindingId?: string,
   ) {
     const d = this.assertEdit(id);
     const cwd = resolve(data.cwd);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory())
       throw new HttpError(400, "Working directory does not exist.");
+    const previous = d.bindings.find((b) => b.id === bindingId);
+    const approvalLevel =
+      data.approvalLevel ??
+      (previous?.runtime === data.runtime
+        ? previous.approvalLevel
+        : defaultApprovalLevel(data.runtime));
     this.store.transaction(() => {
       if (bindingId) {
         const b = d.bindings.find((b) => b.id === bindingId);
         if (!b) throw new HttpError(404, "Binding not found.");
         this.store.update("bindings", bindingId, {
           ...data,
+          approvalLevel,
           cwd,
           sessionId:
             b.runtime === data.runtime && b.cwd === cwd ? b.sessionId : null,
@@ -134,6 +143,7 @@ export class Orchestrator extends EventEmitter {
           id: uid(),
           issueId: id,
           ...data,
+          approvalLevel,
           cwd,
           sessionId: null,
         });
@@ -143,7 +153,7 @@ export class Orchestrator extends EventEmitter {
         "Human",
         "binding",
         `${bindingId ? "Updated" : "Bound"} ${data.name}`,
-        data.role,
+        `${data.role}\nApproval level: ${approvalLevel}`,
       );
     });
     this.changed();

@@ -3,11 +3,13 @@ import { z } from "zod";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { HttpError, Orchestrator } from "./orchestrator.js";
+import { approvalLevels } from "./approval.js";
 const text = z.string().trim().min(1).max(20000);
 const issueSchema = z.object({ title: text.max(240), description: text });
 const bindingSchema = z.object({
   name: text.max(80),
   runtime: z.enum(["codex", "pi"]),
+  approvalLevel: z.enum(approvalLevels).optional(),
   role: text,
   cwd: text,
   model: z.string().trim().max(200).default(""),
