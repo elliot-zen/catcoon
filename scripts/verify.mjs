@@ -623,9 +623,61 @@ try {
     .filter({ hasText: "Done" })
     .waitFor();
   assert.equal(await humanRequest.count(), 0);
+
+  await page
+    .getByRole("button", { name: "Issue", exact: true })
+    .first()
+    .click();
+  await page.getByRole("button", { name: /New issue/ }).click();
+  await page.getByLabel("Title", { exact: true }).fill("Kimi Code integration");
+  await page
+    .getByLabel("Description", { exact: true })
+    .fill("Implement with Kimi Code and continue its saved session.");
+  await page.getByRole("button", { name: "Create issue", exact: true }).click();
+  await page.getByRole("button", { name: "+ Add", exact: true }).click();
+  await page.getByLabel("Agent runtime").selectOption("kimi");
+  await expect(page.getByLabel("Approval level", { exact: true })).toHaveValue(
+    "strict",
+  );
+  await page
+    .getByLabel("Agent description", { exact: true })
+    .fill("Implement and verify with Kimi Code");
+  await page
+    .getByLabel("Approval level", { exact: true })
+    .selectOption("automatic");
+  await page.getByRole("button", { name: "Bind agent", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  assert.equal((await readIssue()).bindings[0].runtime, "kimi");
+  await bindingAction("Kimi Code", "Open Kimi Code session");
+  const kimiComposer = page.getByRole("textbox", {
+    name: "Message Kimi Code",
+    exact: true,
+  });
+  await kimiComposer.fill("Implement the assigned task");
+  await kimiComposer.press("Enter");
+  await expect(page.locator(".session-notice")).toContainText(
+    "Kimi Code accepts messages after the current turn finishes",
+  );
+  await kimiComposer.fill("Follow up after the current turn");
+  await expect(
+    page.getByRole("button", { name: "Send message", exact: true }),
+  ).toBeDisabled();
+  await expect(page.locator(".session-header .badge")).toHaveText("Stopped");
+  await expect(
+    page.getByRole("button", { name: "Send message", exact: true }),
+  ).toBeEnabled();
+  await kimiComposer.press("Enter");
+  await expect(page.locator(".session-header .badge")).toHaveText("Running");
+  await expect(page.locator(".session-header .badge")).toHaveText("Stopped");
+  await page.reload();
+  await bindingAction("Kimi Code", "Open Kimi Code session");
+  await expect(
+    page.getByRole("heading", { name: "Kimi Code", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".task-message")).toHaveCount(2);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser happy path passed: workflow and approvals, issue editing during approval and after completion, save/cancel/reload, Lucide icons, binding policies and menus, independent directories and validation, locked sessions, session chat/steering and persistence, failed-submit draft retention, IME/multiline input, Human requests above activity, search and mobile layout.",
+    "Browser happy path passed: workflow and approvals, issue editing during approval and after completion, save/cancel/reload, Lucide icons, binding policies and menus, independent directories and validation, locked sessions, session chat/steering and persistence, Kimi binding and idle chat with active-turn messaging guard, failed-submit draft retention, IME/multiline input, Human requests above activity, search and mobile layout.",
   );
 } finally {
   await browser?.close();

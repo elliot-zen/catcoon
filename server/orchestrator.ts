@@ -12,6 +12,7 @@ import { Jev, routeState } from "./jev.js";
 import { codex, codexAnswers } from "./runtime/codex.js";
 import { codexMcpResponse } from "./runtime/codex-mcp.js";
 import { pi } from "./runtime/pi.js";
+import { kimi, kimiResponse } from "./runtime/kimi.js";
 import {
   approvalDescriptions,
   approvalLabels,
@@ -69,7 +70,7 @@ export class Orchestrator extends EventEmitter {
     public store: Store,
     private router: Router = new Jev(),
     private factory: Factory = (b, p, c) =>
-      b.runtime === "codex" ? codex(b, p, c) : pi(b, p, c),
+      ({ codex, pi, kimi })[b.runtime](b, p, c),
   ) {
     super();
     mkdirSync(resolve(process.env.DATA_DIR || ".data", "sessions"), {
@@ -647,6 +648,13 @@ export class Orchestrator extends EventEmitter {
     if (r.native?.method === "mcpServer/elicitation/request") {
       try {
         codexMcpResponse(r.native.params, answer, approved);
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+    }
+    if (r.native?.runtime === "kimi") {
+      try {
+        kimiResponse(r.native, answer, approved);
       } catch (e) {
         throw new HttpError(400, (e as Error).message);
       }

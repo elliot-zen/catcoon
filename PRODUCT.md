@@ -10,15 +10,15 @@ Catcoon 是以 Issue 为中心的 Agent 协作系统。Human 描述目标、绑�
 
 - 创建 Issue，填写标题和描述，两项均必填且不能仅包含空白。
 - 绑定一个或多个 Agent，每个绑定必须描述该 Agent 在当前 Issue 中的功能和职责。
-- 支持 `codex` 和 `pi` 两种 `agent_runtime`，两者均须能够实际执行任务。
+- 支持 `codex`、`pi` 和 `kimi` 三种 `agent_runtime`，均须能够实际执行任务；Kimi Code 在 AGT-003 中扩展接入。
 - 显式 Start 后才开始自动流转；Stop 停止自动流转并请求中断当前执行。
 - Jev 根据绑定职责、Issue 上下文和 Agent 结果进行路由。
 - Human 能查看执行结果、处理审批和补充决策。
 - 展示状态、当前执行 Agent、会话及活动历史。
 
-第一版采用单 Issue 串行执行，同一 Issue 同时最多有一个执行中的 Agent turn。可只绑定 Codex 或 Pi，也可同时绑定二者；不强制二者都参与每个 Issue。
+采用单 Issue 串行执行，同一 Issue 同时最多有一个执行中的 Agent turn。可只绑定 Codex、Pi 或 Kimi Code，也可组合绑定；不强制所有 runtime 都参与每个 Issue。
 
-暂不包含其他 runtime（包括设计示例中的 Kimi）、并行 Agent、可视化工作流编排、复杂权限体系、自动重试策略、完成后重新打开，以及附件和外部产物平台集成。设计中的 checklist 不作为第一版创建或完成的必备条件，完成依据为描述中的目标与实际结果。
+暂不包含其他 runtime、并行 Agent、可视化工作流编排、复杂权限体系、自动重试策略、完成后重新打开，以及附件和外部产物平台集成。设计中的 checklist 不作为第一版创建或完成的必备条件，完成依据为描述中的目标与实际结果。
 
 ## 2. 角色与概念
 
@@ -26,7 +26,7 @@ Catcoon 是以 Issue 为中心的 Agent 协作系统。Human 描述目标、绑�
 | --- | --- |
 | Human | 创建目标，定义绑定职责，Start / Stop，审批、拒绝或补充决策 |
 | Agent | 按分配任务执行，返回答案、结果或审批请求 |
-| agent_runtime | Agent 的执行适配层；第一版为 codex、pi，提供会话、执行、中断和事件转换 |
+| agent_runtime | Agent 的执行适配层；支持 codex、pi、kimi，提供会话、执行、中断和事件转换 |
 | Jev | TypeSafe AI 的结构化判断模型，用于判定下一步和选择 Agent |
 | Orchestrator | 汇集上下文、调用 Jev、校验决策，并依据状态机调度 runtime |
 | Binding | 某个 Issue 与 Agent 的关联，包含 runtime 和该 Issue 下的功能描述 |
@@ -212,7 +212,7 @@ Turn 的执行状态与 Issue 状态分开记录，至少区分执行中、等�
 - 当前执行卡片仅在 `running` 显示 Agent、任务、turn 和会话入口；`stopping` 显示停止进度。
 - 会话入口支持查看消息、工具结果和历史，并向绑定的 Agent 发送文字消息。消息沿用该 Binding 的原生会话、工作目录和审批策略，由 Orchestrator 保证单 turn 执行。
 - 会话中的用户消息靠右；Agent 回复按耗时状态、工具过程、正文排列。等待输出时显示轻微闪烁的 Thinking…，执行时显示实时增长的 Working for … s，结束后固定为 Worked for … s。工具过程可折叠，正文保持可见，已完成回复支持复制。
-- `ready`、`stopped`、`done` 且无未决人工请求时，可以发起独立聊天；完成后返回 `stopped`（原本为 `done` 则保持完成），不自动触发 Jev。运行中只能向当前执行的 Agent 追加消息，原自动工作流仍沿用原调度路径。调度中、停止中和等待人工期间不可发送。
+- `ready`、`stopped`、`done` 且无未决人工请求时，可以发起独立聊天；完成后返回 `stopped`（原本为 `done` 则保持完成），不自动触发 Jev。运行中只能向支持追加消息的当前 Agent 发送，原自动工作流仍沿用原调度路径。Kimi Code ACP 暂不支持运行中追加消息，需等待本轮结束或先 Stop。调度中、停止中和等待人工期间不可发送。
 - Issue 页面不提供底部聊天框；未决 Human 审批或回答卡片独立显示在页面最上方，不受 Activity 筛选影响。停止期间保留请求提示，Start 后恢复处理入口。会话消息不能替代审批或回答。
 - 活动流记录创建、绑定变更、Start、Jev 路由、Agent 开始 / 完成、人工请求与决定、Stop、错误和 Issue 完成。
 
@@ -230,7 +230,7 @@ Turn 的执行状态与 Issue 状态分开记录，至少区分执行中、等�
 
 ## 8. 第一版验收场景
 
-1. **创建与绑定**：填写标题和描述后状态为 `waiting_binding`；添加带职责描述的 Codex 或 Pi 后为 `ready`，全过程没有自动执行。
+1. **创建与绑定**：填写标题和描述后状态为 `waiting_binding`；添加带职责描述的 Codex、Pi 或 Kimi Code 后为 `ready`，全过程没有自动执行。
 2. **Codex 独立完成**：只绑定 Codex，Start 后经历 `routing → running → routing → done`，活动流可追溯任务和结果。
 3. **Pi 独立完成**：只绑定 Pi，同样跑通真实执行与完成路径。
 4. **Agent 接力**：绑定 Codex 实现、Pi 审查，Jev 能按结果切换 Agent，且任意时刻最多一个 turn 执行。

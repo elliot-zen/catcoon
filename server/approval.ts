@@ -7,7 +7,7 @@ export const approvalLabels: Record<ApprovalLevel, string> = {
   automatic: "Fully automatic",
 };
 export const defaultApprovalLevel = (runtime: Runtime): ApprovalLevel =>
-  runtime === "pi" ? "strict" : "on-request";
+  runtime === "codex" ? "on-request" : "strict";
 
 export const approvalDescriptions: Record<
   Runtime,
@@ -28,6 +28,14 @@ export const approvalDescriptions: Record<
       "Allow workspace file changes and simple read commands (pwd, ls, cat, head, tail, wc). Ask before other operations.",
     automatic:
       "Run tools without manual approval or automatic review, using the permissions of the Pi process. Host restrictions still apply.",
+  },
+  kimi: {
+    strict:
+      "Use Kimi's manual approval mode. Read-only tools run immediately; operations requiring permission wait for your approval.",
+    "on-request":
+      "Use Kimi's safe-operation approval policy. Routine operations run automatically; remaining permission requests wait for you.",
+    automatic:
+      "Run enabled tools without manual approval or automatic review, using the permissions of the Kimi process. Host and organization restrictions still apply.",
   },
 };
 

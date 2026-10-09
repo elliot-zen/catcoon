@@ -4,12 +4,21 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { codex } from "../server/runtime/codex.js";
 import { pi } from "../server/runtime/pi.js";
+import { kimi } from "../server/runtime/kimi.js";
+import { defaultApprovalLevel } from "../server/approval.js";
 import type { Binding } from "../server/types.js";
-const dir = mkdtempSync(join(tmpdir(), "catcoon-live-"));
-for (const [name, factory] of [
+const factories = [
   ["codex", codex],
   ["pi", pi],
-] as const) {
+  ["kimi", kimi],
+] as const;
+const selected = process.argv.slice(2);
+if (selected.some((name) => !factories.some(([runtime]) => runtime === name)))
+  throw new Error("Choose runtimes from: codex, pi, kimi.");
+const dir = mkdtempSync(join(tmpdir(), "catcoon-live-"));
+for (const [name, factory] of factories.filter(
+  ([name]) => !selected.length || selected.includes(name),
+)) {
   let handle: ReturnType<typeof factory> | undefined;
   let result = "";
   let failure: Error | undefined;
@@ -27,7 +36,7 @@ for (const [name, factory] of [
         issueId: "smoke",
         name,
         runtime: name,
-        approvalLevel: name === "pi" ? "strict" : "on-request",
+        approvalLevel: defaultApprovalLevel(name),
         role: "Read-only smoke test",
         cwd: dir,
         model: "",

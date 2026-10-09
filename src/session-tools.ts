@@ -7,7 +7,7 @@ export interface SessionTool {
   detail: string;
 }
 
-// Codex emits item start/completion; Pi emits separate tool start/end events.
+// Codex emits items, Pi emits tool start/end, and Kimi emits ACP tool updates.
 // Keep one row per native call, retaining the name from its start event.
 export function sessionTools(messages: Message[]): SessionTool[] {
   const calls = new Map<
@@ -29,7 +29,7 @@ export function sessionTools(messages: Message[]): SessionTool[] {
     const id = String(data.toolCallId || data.id || `message-${message.id}`);
     const previous = calls.get(id);
     const merged = { ...previous?.data, ...data };
-    const state = String(data.status || "").toLowerCase();
+    const state = String(merged.status || "").toLowerCase();
     const status: SessionTool["status"] =
       data.isError ||
       (typeof data.exitCode === "number" && data.exitCode !== 0) ||
@@ -38,7 +38,9 @@ export function sessionTools(messages: Message[]): SessionTool[] {
         : ["declined", "rejected", "cancelled", "canceled"].includes(state)
           ? "blocked"
           : data.type === "tool_execution_start" ||
-              ["running", "inprogress", "in_progress"].includes(state)
+              ["pending", "running", "inprogress", "in_progress"].includes(
+                state,
+              )
             ? "running"
             : "completed";
     const label =

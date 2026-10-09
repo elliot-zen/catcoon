@@ -1,10 +1,10 @@
 # Catcoon
 
-以 Issue 为中心的本地 Agent 协作系统。填写目标，绑定 Codex / Pi 及各自职责，由 Jev 判断下一步交给 Agent 还是 Human。
+以 Issue 为中心的本地 Agent 协作系统。填写目标，绑定 Codex / Pi / Kimi Code 及各自职责，由 Jev 判断下一步交给 Agent 还是 Human。
 
 ## 启动
 
-需要 Node.js 24+，以及已安装、已登录的 `codex` 和 `pi`。第一版以 Linux 为运行环境。
+需要 Node.js 24+，以及所选 Agent 已安装、已登录的 CLI：`codex`、`pi` 或 Kimi Code 2.x 的 `kimi`。以 Linux 为运行环境。
 
 ```bash
 npm install
@@ -15,7 +15,9 @@ npm run dev
 
 打开 http://localhost:3000 。应用仅监听本机；默认不生成示例 Issue，也不会在创建或绑定时启动 Agent。
 
-Jev 密钥从 https://console.typesafe.ai/keys 获取。Codex 和 Pi 沿用各自 CLI 的本地认证及默认模型，无须将它们的密钥粘贴进界面。绑定时可以指定模型。
+Jev 密钥从 https://console.typesafe.ai/keys 获取。Agent 沿用各自 CLI 的本地认证及默认模型，无须将它们的密钥粘贴进界面。API 绑定时可以指定模型。
+
+Kimi Code 可按[官方安装文档](https://moonshotai.github.io/kimi-code/en/guides/getting-started)安装，运行 `kimi login` 完成登录。若服务的 PATH 找不到它，在 `.env` 中设置 `KIMI_BIN=/absolute/path/to/kimi`。接入使用 `kimi acp`，已验证版本为 2.1.1；旧 Python `kimi-cli` 的 `--wire` 不属于本次支持范围。详细协议与验证见 [Kimi Code 接入调研](./docs/integrations/kimi-code.md)。
 
 生产模式：
 
@@ -31,7 +33,7 @@ npm start
 ## 使用
 
 1. New issue：填写标题和描述，明确目标与完成标准。
-2. 点击 Binding agents 中的 + Add，选择 Codex 或 Pi，填写该 Issue 中的 Agent description 和 Working directory。目录默认预填 `AGENT_WORKSPACE`（未配置时为服务启动目录），每个 Agent 可独立修改；必须是 Agent 运行机器上已存在、可读取和进入的绝对路径。保存失败时保留表单，并在目录字段下提示原因。绑定保存不会启动 Agent。
+2. 点击 Binding agents 中的 + Add，选择 Codex、Pi 或 Kimi Code，填写该 Issue 中的 Agent description 和 Working directory。目录默认预填 `AGENT_WORKSPACE`（未配置时为服务启动目录），每个 Agent 可独立修改；必须是 Agent 运行机器上已存在、可读取和进入的绝对路径。保存失败时保留表单，并在目录字段下提示原因。绑定保存不会启动 Agent。
 3. 可再绑定另一位 Agent，例如 Codex 实现、Pi 审查。
 4. Start：Jev 读取目标、职责、历史结果，选择 Agent 执行。
 5. Needs attention：查看具体请求，Approve、Reject 并填写反馈，或回答问题。
@@ -68,6 +70,7 @@ Issue 标题旁的 SquarePen 编辑图标可在任何状态下打开表单，统
 | 调度  | 显式状态机、运行代次校验、runtime 生命周期管理                             |
 | Codex | `codex app-server --stdio` JSON RPC，thread 恢复、审批响应、turn 中断      |
 | Pi    | `pi --mode rpc`，独立持久会话、自定义审批扩展，等待 `agent_settled` 才结束 |
+| Kimi Code | `kimi acp` JSON-RPC 2.0，会话恢复、流式工具与回答、原生审批、turn 取消 |
 | Jev   | TypeSafe System One HTTP API，原子 Choice 问题及置信度校验                 |
 
 主要代码：
@@ -75,13 +78,15 @@ Issue 标题旁的 SquarePen 编辑图标可在任何状态下打开表单，统
 - `server/store.ts`：SQLite schema 和查询。
 - `server/orchestrator.ts`：Issue 状态机、调度、审批、停止与恢复。
 - `server/jev.ts`：目标判断、人工路由和绑定 Agent 选择。
-- `server/runtime/`：Codex / Pi 适配器、JSONL 子进程协议和 Pi 审批扩展。
+- `server/runtime/`：Codex / Pi / Kimi Code 适配器、JSONL 子进程协议和 Pi 审批扩展。
 - `server/app.ts`：API 校验与 SSE。
 - `src/main.tsx`、`src/style.css`：列表、详情、绑定、人工决策与会话界面。
 
 Binding agent 可选择三档审批，每个绑定独立保存。绑定卡片右上角的三点菜单提供 Edit 和 Session，分别打开编辑窗口和该 Agent 的会话界面。停止 Issue 后可以修改审批级别；有未决原生请求时也可保存审批级别，其他绑定字段暂不可修改。新策略从下一轮运行生效；已挂起的 turn 保留原策略和请求，再次 Start 后仍需处理该请求。会话历史保留，运行中禁止编辑。
 
 Session 支持文字聊天，Enter 发送，Shift+Enter 换行。空闲时沿用绑定的原生会话启动一轮，结束后停留在 `stopped`，点击 Start 才继续自动调度；已完成 Issue 的聊天结束后仍为 `done`。运行中只允许向当前 Agent 追加消息（Codex `turn/steer` / Pi `steer`），不创建并行 turn。消息和回复保存在 SQLite，可重新进入会话查看。发送失败保留草稿；等待人工时请先处理 Issue 顶部的审批或回答卡片，聊天不能代替审批。Issue 底部不再显示聊天输入框。
+
+Kimi Code 的 ACP 接口暂不支持运行中追加消息，会话页会提示等待当前 turn 结束或先 Stop；空闲时仍能沿用原生会话继续聊天。恢复会话优先使用不重放历史的 `session/resume`，不支持时使用 `session/load` 并忽略重放内容，避免重复记录旧回答。
 
 会话中的用户消息靠右并按内容宽度显示。Agent 等待输出时显示轻微闪烁的 Thinking…，开始输出或调用工具后显示每秒更新的 Working for … s，结束后显示固定的 Worked for … s。工具过程在正文上方，点击耗时行可折叠，工具开始与结束事件合并显示，已完成回复支持复制。Issue 详情右侧的 Properties 卡片显示状态、文件夹、创建人和时间信息；不同状态使用不同颜色，列表和会话页同步使用相同状态配色。
 
@@ -97,6 +102,8 @@ Codex 的前两档使用 `approvalsReviewer: user`；完全自动不会启用 `a
 
 Pi 显式加载 Catcoon 审批扩展，关闭自动发现的扩展。只读工具 `read/grep/find/ls` 在各档直接执行；按需模式的 shell 仅放行上述单条命令，重定向、命令组合、替换和转义均需审批。工作区路径检查包含符号链接，但审批门不是操作系统 sandbox。三档均保留 Agent 的人工补充信息请求。
 
+Kimi Code 默认严格审批。三档分别映射 ACP `default`（原生人工审批）、`auto`（原生安全操作策略）、`yolo`（全部工具自动执行）；这些协议 ID 与 CLI 开关的名称并不一一对应。每轮恢复后显式设置审批模式，批准仅选择 `allow_once`，不会授予整个会话的永久权限。并发审批逐个展示，结构化问题通过 JSON 表单回答并校验；即使完全自动，实际收到的问题或外部验证请求仍交给 Human。Kimi 的审批门不提供操作系统 sandbox。
+
 ## 配置与数据
 
 | 环境变量               | 默认值 / 用途                                        |
@@ -110,8 +117,9 @@ Pi 显式加载 Catcoon 审批扩展，关闭自动发现的扩展。只读工�
 | `DATA_DIR`             | `.data`                                              |
 | `AGENT_WORKSPACE`      | 当前项目目录；新绑定 Agent 的工作目录                |
 | `CODEX_BIN` / `PI_BIN` | `codex` / `pi`；可以指定可执行文件绝对路径           |
+| `KIMI_BIN`             | `kimi`；Kimi Code 2.x 可执行文件路径                  |
 
-数据库为 `.data/catcoon.sqlite`，Pi 会话为 `.data/sessions/`。Codex thread 由 Codex 自己保存，数据库记录其 ID。不要同时启动两个使用相同 `DATA_DIR` 的服务；服务锁会阻止重复启动。
+数据库为 `.data/catcoon.sqlite`，Pi 会话为 `.data/sessions/`。Codex thread 和 Kimi 会话由各自 CLI 保存，数据库记录其 ID。不要同时启动两个使用相同 `DATA_DIR` 的服务；服务锁会阻止重复启动。
 
 Jev 调用默认在服务终端打印 `[Jev request]`、`[Jev response]` 和失败时的 `[Jev error]` 日志。同一调用通过 `requestId` 关联，包含请求地址与完整请求体、原始响应体、HTTP 状态和耗时；网络、超时及解析错误也会记录。Authorization 不打印，API Key 在日志中脱敏。
 
@@ -128,12 +136,14 @@ npm run test:browser
 # 1440 × 960 设计稿布局核对，截图输出 /tmp/catcoon-ui-*.png
 npm run test:design
 
-# 已登录的真实 Codex 和 Pi 各执行一次只读响应，会使用模型额度
+# 已登录的真实 Codex、Pi、Kimi 各执行一次只读响应，会使用模型额度
 npm run test:runtime
+# 也可只验证指定 runtime
+npm run test:runtime -- kimi
 ```
 
 已有 Chromium 可通过 `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/absolute/path/to/chrome` 运行浏览器测试。浏览器截图输出至 `/tmp/catcoon-{approval,detail,list,mobile}.png`。
 
-测试覆盖创建与绑定、两种 runtime 的真实子进程协议、审批挂起与响应、Agent 接力、停止恢复、迟到决策、SQLite 重启恢复及 Jev HTTP 请求契约。浏览器流程使用测试适配器；真实 runtime smoke 只验证认证、协议与响应，真实 Jev 的语义路由需要配置有效密钥后验证。
+测试覆盖创建与绑定、三种 runtime 的子进程协议、审批挂起与响应、结构化问答与并发审批、Agent 接力、停止恢复、迟到决策、SQLite 重启恢复及 Jev HTTP 请求契约。浏览器流程使用测试适配器；真实 runtime smoke 只验证认证、协议与响应，真实 Jev 的语义路由需要配置有效密钥后验证。
 
 参考：[Figma 设计](https://www.figma.com/design/RfuMz07kH8mSoAhEMmRpFG/Catcoon?node-id=0-1)、[Jev 文档](https://docs.typesafe.ai/introduction)、[Codex App Server](https://developers.openai.com/codex/app-server)。

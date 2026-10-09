@@ -7,7 +7,13 @@ export type Status =
   | "stopping"
   | "stopped"
   | "done";
-export type Runtime = "codex" | "pi";
+export const runtimes = ["codex", "pi", "kimi"] as const;
+export type Runtime = (typeof runtimes)[number];
+export const runtimeLabels: Record<Runtime, string> = {
+  codex: "Codex",
+  pi: "Pi",
+  kimi: "Kimi Code",
+};
 export type ApprovalLevel = "strict" | "on-request" | "automatic";
 export interface Issue {
   id: string;

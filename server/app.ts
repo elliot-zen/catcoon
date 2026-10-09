@@ -3,11 +3,12 @@ import { z } from "zod";
 import { spawnSync } from "node:child_process";
 import { HttpError, Orchestrator } from "./orchestrator.js";
 import { approvalLevels } from "./approval.js";
+import { runtimes } from "./types.js";
 const text = z.string().trim().min(1).max(20000);
 const issueSchema = z.object({ title: text.max(240), description: text });
 const bindingSchema = z.object({
   name: text.max(80),
-  runtime: z.enum(["codex", "pi"]),
+  runtime: z.enum(runtimes),
   approvalLevel: z.enum(approvalLevels).optional(),
   role: text,
   cwd: z.string().trim().max(20000),
@@ -37,9 +38,9 @@ export function createApp(engine: Orchestrator) {
       workspace: process.env.AGENT_WORKSPACE || process.cwd(),
       pathStyle: process.platform === "win32" ? "windows" : "posix",
       jevConfigured: !!process.env.TYPESAFE_API_KEY,
-      runtimes: ["codex", "pi"],
+      runtimes,
       runtimeAvailable: Object.fromEntries(
-        ["codex", "pi"].map((r) => [
+        runtimes.map((r) => [
           r,
           spawnSync(process.env[r.toUpperCase() + "_BIN"] || r, ["--version"], {
             timeout: 5000,

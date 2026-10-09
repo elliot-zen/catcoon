@@ -7,9 +7,11 @@ import type {
   Detail,
   HumanRequest,
   Issue,
+  Runtime,
   Status,
   Turn,
 } from "../server/types";
+import { runtimes, runtimeLabels } from "../server/types";
 import {
   approvalDescriptions,
   approvalLabels,
@@ -1066,9 +1068,7 @@ function BindingForm({
             name:
               initial?.runtime === runtime
                 ? initial.name
-                : runtime === "codex"
-                  ? "Codex"
-                  : "Pi",
+                : runtimeLabels[runtime],
             cwd: path,
             model: initial?.model || "",
           });
@@ -1082,7 +1082,7 @@ function BindingForm({
               aria-label="Agent runtime"
               disabled={!canEdit || busy || approvalOnly}
               onChange={(e) => {
-                const next = e.target.value as "codex" | "pi";
+                const next = e.target.value as Runtime;
                 setRuntime(next);
                 setApprovalLevel(
                   initial?.runtime === next
@@ -1091,8 +1091,11 @@ function BindingForm({
                 );
               }}
             >
-              <option value="codex">Codex</option>
-              <option value="pi">Pi</option>
+              {runtimes.map((value) => (
+                <option key={value} value={value}>
+                  {runtimeLabels[value]}
+                </option>
+              ))}
             </select>
             <Icon name="chevron-down" />
           </div>
@@ -1176,7 +1179,7 @@ function BindingForm({
               ? approvalLevel === "automatic"
                 ? "Codex · Full access; sandbox disabled."
                 : "Codex · Sandbox restrictions enabled; approvals reviewed by you."
-              : "Pi · Tools use the permissions of the running environment."}
+              : `${runtimeLabels[runtime]} · Tools use the permissions of the running environment.`}
           </p>
         </div>
         <div className="dialog-actions">
@@ -1472,9 +1475,11 @@ function SessionPage({
     ? "A human decision is required. Review the request at the top of the issue."
     : d.status === "running" && current?.bindingId !== bindingId
       ? "Another agent is working. Wait for it to finish or stop the issue before sending."
-      : ["routing", "stopping", "waiting_human"].includes(d.status)
-        ? "Wait for the current step to finish before sending."
-        : "";
+      : d.status === "running" && binding.runtime === "kimi"
+        ? "Kimi Code accepts messages after the current turn finishes. Wait for it to finish or stop the issue before sending."
+        : ["routing", "stopping", "waiting_human"].includes(d.status)
+          ? "Wait for the current step to finish before sending."
+          : "";
   async function send() {
     const message = draft.trim();
     if (!message || blocked || inFlight.current) return;

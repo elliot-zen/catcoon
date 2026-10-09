@@ -7,7 +7,7 @@ export class JsonProcess {
     {
       resolve: (v: any) => void;
       reject: (e: Error) => void;
-      timer: NodeJS.Timeout;
+      timer?: NodeJS.Timeout;
     }
   >();
   seq = 0;
@@ -16,7 +16,13 @@ export class JsonProcess {
   onMessage: (m: any) => void = () => {};
   onClose: () => void = () => {};
   onError: (e: Error) => void = () => {};
-  constructor(command: string, args: string[], cwd: string, env = process.env) {
+  constructor(
+    command: string,
+    args: string[],
+    cwd: string,
+    env = process.env,
+    private jsonrpc = false,
+  ) {
     this.child = spawn(command, args, {
       cwd,
       stdio: "pipe",
@@ -72,15 +78,29 @@ export class JsonProcess {
   send(data: unknown) {
     if (this.exited || this.child.stdin.destroyed)
       throw new Error("Runtime is no longer connected.");
-    this.child.stdin.write(JSON.stringify(data) + "\n");
+    this.child.stdin.write(
+      JSON.stringify(
+        this.jsonrpc ? { jsonrpc: "2.0", ...(data as object) } : data,
+      ) + "\n",
+    );
   }
-  request(method: string, params: any, pi = false): Promise<any> {
+  request(
+    method: string,
+    params: any,
+    pi = false,
+    timeoutMs: number | null = 30000,
+  ): Promise<any> {
     const id = String(++this.seq);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Runtime timed out: ${method}`));
-      }, 30000);
+      // ACP prompt responses arrive only after the entire turn (including
+      // human decisions). They must not use the short control-RPC deadline.
+      const timer =
+        timeoutMs === null
+          ? undefined
+          : setTimeout(() => {
+              this.pending.delete(id);
+              reject(new Error(`Runtime timed out: ${method}`));
+            }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try {
         this.send(
