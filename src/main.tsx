@@ -437,50 +437,6 @@ function App() {
           ) : detail ? (
             <section className="detail-layout" data-node-id="10:2373">
               <div className="detail-main">
-                {pending && (
-                  <section
-                    ref={humanRequestRef}
-                    className="human-request"
-                    aria-label="Human request"
-                  >
-                    <div className="activity-title">
-                      <strong>Human · {pending.title}</strong>
-                      <time>{time(pending.createdAt)}</time>
-                    </div>
-                    {detail.status === "waiting_human" ? (
-                      <RequestActions
-                        key={pending.id}
-                        request={pending}
-                        busy={busy}
-                        inspect={() =>
-                          setInspect({
-                            id: pending.id,
-                            issueId: detail.id,
-                            actor: "Human",
-                            type: "request",
-                            summary: pending.title,
-                            detail: pending.detail,
-                            createdAt: pending.createdAt,
-                          })
-                        }
-                        submit={(answer, approved) =>
-                          perform(() =>
-                            api(
-                              `/issues/${detail.id}/requests/${pending.id}`,
-                              "POST",
-                              { answer, approved },
-                            ),
-                          )
-                        }
-                      />
-                    ) : (
-                      <p className="muted">
-                        This request is pending. Start the issue to approve or
-                        answer it.
-                      </p>
-                    )}
-                  </section>
-                )}
                 <div className="title-row">
                   <div className="issue-title">
                     <h1>{detail.title}</h1>
@@ -581,6 +537,50 @@ function App() {
                       <option value="System">System</option>
                     </select>
                   </div>
+                  {pending && (
+                    <section
+                      ref={humanRequestRef}
+                      className="human-request"
+                      aria-label="Human request"
+                    >
+                      <div className="activity-title">
+                        <strong>Human · {pending.title}</strong>
+                        <time>{time(pending.createdAt)}</time>
+                      </div>
+                      {detail.status === "waiting_human" ? (
+                        <RequestActions
+                          key={pending.id}
+                          request={pending}
+                          busy={busy}
+                          inspect={() =>
+                            setInspect({
+                              id: pending.id,
+                              issueId: detail.id,
+                              actor: "Human",
+                              type: "request",
+                              summary: pending.title,
+                              detail: pending.detail,
+                              createdAt: pending.createdAt,
+                            })
+                          }
+                          submit={(answer, approved) =>
+                            perform(() =>
+                              api(
+                                `/issues/${detail.id}/requests/${pending.id}`,
+                                "POST",
+                                { answer, approved },
+                              ),
+                            )
+                          }
+                        />
+                      ) : (
+                        <p className="muted">
+                          This request is pending. Start the issue to approve or
+                          answer it.
+                        </p>
+                      )}
+                    </section>
+                  )}
                   <div className="activity-list">
                     {activities.map((a) => {
                       const decision = parse(a.detail);
@@ -1472,7 +1472,7 @@ function SessionPage({
   const current = d.turns.find((t) => t.id === d.currentTurnId);
   const pending = d.requests.find((r) => r.status === "pending");
   const blocked = pending
-    ? "A human decision is required. Review the request at the top of the issue."
+    ? "A human decision is required. Review the request under Activity on the issue page."
     : d.status === "running" && current?.bindingId !== bindingId
       ? "Another agent is working. Wait for it to finish or stop the issue before sending."
       : d.status === "running" && binding.runtime === "kimi"

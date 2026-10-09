@@ -236,10 +236,19 @@ try {
     name: "Human request",
     exact: true,
   });
+  const activityHeading = page.getByRole("heading", {
+    name: "Activity",
+    exact: true,
+  });
+  assert.ok(
+    (await humanRequest.boundingBox()).y >
+      (await activityHeading.boundingBox()).y,
+    "Human request must appear below the Activity heading",
+  );
   assert.ok(
     (await humanRequest.boundingBox()).y <
-      (await page.locator(".title-row").boundingBox()).y,
-    "Human request must appear above the issue title and activity",
+      (await page.locator(".activity-list").boundingBox()).y,
+    "Human request must appear above the activity history",
   );
   await page
     .getByLabel("Filter activity", { exact: true })
@@ -605,8 +614,9 @@ try {
     1,
   );
   assert.ok(
-    (await humanRequest.boundingBox()).y < 300,
-    "Human answer stays visible at the top even with many activities",
+    (await humanRequest.boundingBox()).y <
+      (await page.locator(".activity").first().boundingBox()).y,
+    "Human answer stays above the activity history even with many activities",
   );
   await page.screenshot({
     path: "/tmp/catcoon-human-request.png",
