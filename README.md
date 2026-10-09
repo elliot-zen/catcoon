@@ -40,6 +40,8 @@ npm start
 
 活动流可查看每次决策和结果；Agent sessions 提供各 turn 的任务输入、增量回答、工具记录与最终结果。
 
+Issue 标题旁的 SquarePen 编辑图标可在任何状态下打开表单，统一编辑标题和 Description。保存不会中断当前 Agent、重发已发出的 Jev 请求或处理待审批请求；每次新的 Jev 决策从数据库读取最新标题和描述。需要立刻按新目标执行时，可手动 Stop 后再 Start。
+
 发给 Jev 的 `state` 直接使用 JSON object，包含 `goal: {title, description}` 和 `history`。`history` 只保留最近一次 Agent 执行；若最新一次已回答的 Human 请求在该轮之后，则按 Agent、Human 顺序附上，最多两条。首次运行为空数组，没有 Agent 历史时可仅包含 Human 回答。每条含 `status/type/agent_id/agent_name/answer`；Agent 使用 Binding ID 和名称，Human 使用 `agent_id: null`、`agent_name: "Human"`。判断 Human 先后使用活动中记录的回答时间，未回答的请求不进入历史。候选 Agent 的职责放在 `questions.decision.criteria` 中；本地完整历史仍保留。
 
 ## 状态与执行规则
@@ -54,13 +56,13 @@ npm start
 - Stop 不撤销已经产生的文件或外部效果；等待人工时 Stop 会保留挂起会话和审批，再次 Start 后才能处理。
 - 重启后关闭自动推进，并核对、终止上次遗留的 runtime 进程。Linux 使用 PID 与 `/proc` 进程创建时间避免误认复用的 PID；确认结束后才能重新 Start。
 - 重启会失去原生 RPC 连接，但保留人工请求内容。重新 Start 后先处理该请求，再带历史上下文规划新的 turn；新的工具操作仍需经过 runtime 自己的审批，不自动重放旧操作。
-- 有执行历史的 Binding 保留用于追溯，第一版不能删除，可以在停止后编辑职责和审批级别。工作目录在首次执行前可修改；已有会话或执行历史后只读，需要新绑定来选择另一目录。未决原生请求存在时仅允许在停止状态下修改未来轮次的审批级别，目标和其他绑定字段仍需先处理该请求。
+- 有执行历史的 Binding 保留用于追溯，第一版不能删除，可以在停止后编辑职责和审批级别。工作目录在首次执行前可修改；已有会话或执行历史后只读，需要新绑定来选择另一目录。未决原生请求存在时，Binding 仅允许在停止状态下修改未来轮次的审批级别，其他绑定字段仍需先处理该请求；Issue 标题和描述仍可随时编辑。
 
 ## 技术结构
 
 | 部分  | 实现                                                                       |
 | ----- | -------------------------------------------------------------------------- |
-| 前端  | React 19、TypeScript、Vite、CSS，Figma 本地图标及 Geist 字体               |
+| 前端  | React 19、TypeScript、Vite、CSS，Lucide React 图标及 Geist 字体            |
 | API   | Express 5，本机 HTTP 与 SSE 实时更新                                       |
 | 存储  | Node 内置 `node:sqlite`，WAL、事务、单执行 / 单未决请求唯一索引            |
 | 调度  | 显式状态机、运行代次校验、runtime 生命周期管理                             |

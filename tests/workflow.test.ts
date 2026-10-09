@@ -10,17 +10,24 @@ import {
   type Factory,
   type Router,
 } from "../server/orchestrator.js";
-import type { Binding, Decision, RuntimeCallbacks } from "../server/types.js";
+import type {
+  Binding,
+  Decision,
+  Detail,
+  RuntimeCallbacks,
+} from "../server/types.js";
+import { routeState } from "../server/jev.js";
 const stores: Store[] = [];
 afterEach(() => {
   for (const s of stores.splice(0)) s.close();
 });
 const tick = () => new Promise((r) => setTimeout(r, 15));
-function harness(decisions: Decision[] = []) {
+function harness(decisions: Decision[] = [], routerOverride?: Router) {
   const store = new Store(":memory:");
   stores.push(store);
   const executions: {
     binding: Binding;
+    prompt: string;
     cb: RuntimeCallbacks;
     stops: number;
     responses: any[];
@@ -33,6 +40,7 @@ function harness(decisions: Decision[] = []) {
   const factory: Factory = (_b, _p, cb) => {
     const run = {
       binding: _b,
+      prompt: _p,
       cb,
       stops: 0,
       responses: [] as any[],
@@ -51,7 +59,7 @@ function harness(decisions: Decision[] = []) {
       dispose: () => cb.closed(),
     };
   };
-  const e = new Orchestrator(store, router, factory);
+  const e = new Orchestrator(store, routerOverride ?? router, factory);
   const d = e.createIssue("Build an API", "Implement and verify an API");
   e.bind(d.id, {
     name: "Codex",
@@ -85,6 +93,104 @@ test("creating and binding never executes; final turn completion requires routin
   h.executions[0].cb.closed();
   await tick();
   assert.equal(h.store.issue(h.id)?.status, "done");
+});
+test("issue API allows title and description edits in every status without changing workflow state", async () => {
+  const h = harness();
+  const server = createApp(h.e).listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/issues/${h.id}`;
+  const patch = (title: string, description: string) =>
+    fetch(base, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, description }),
+    });
+  try {
+    for (const status of [
+      "waiting_binding",
+      "ready",
+      "routing",
+      "running",
+      "waiting_human",
+      "stopping",
+      "stopped",
+      "done",
+    ] as const) {
+      h.store.status(h.id, status);
+      const before = h.store.issue(h.id)!;
+      const response = await patch(`Title ${status}`, `Description ${status}`);
+      assert.equal(response.status, 200);
+      const saved = (await response.json()) as Detail;
+      assert.equal(saved.title, `Title ${status}`);
+      assert.equal(saved.description, `Description ${status}`);
+      assert.equal(saved.status, status);
+      assert.equal(saved.generation, before.generation);
+      assert.equal(saved.currentTurnId, before.currentTurnId);
+      assert.equal(saved.completedAt, before.completedAt);
+    }
+    const saved = h.store.issue(h.id);
+    assert.equal((await patch("", "Required title")).status, 400);
+    assert.equal((await patch("Required description", "")).status, 400);
+    assert.deepEqual(h.store.issue(h.id), saved);
+    assert.equal(h.executions.length, 0);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+test("editing keeps in-flight routing and execution intact while subsequent routes read the latest goal", async () => {
+  const calls: {
+    detail: Detail;
+    signal: AbortSignal;
+    resolve: (decision: Decision) => void;
+  }[] = [];
+  const h = harness([], {
+    route: (detail, signal) =>
+      new Promise<Decision>((resolve) =>
+        calls.push({ detail, signal, resolve }),
+      ),
+  });
+  h.e.start(h.id);
+  h.e.edit(h.id, "Updated while routing", "Updated routing goal");
+  assert.equal(calls.length, 1, "Saving must not issue another Jev request");
+  assert.equal(calls[0].signal.aborted, false);
+  assert.deepEqual(routeState(calls[0].detail).goal, {
+    title: "Build an API",
+    description: "Implement and verify an API",
+  });
+  calls[0].resolve({
+    action: "agent",
+    bindingId: h.binding.id,
+    detail: "Original task",
+  });
+  await tick();
+  const run = h.executions[0];
+  assert.match(run.prompt, /Build an API/);
+  h.e.edit(h.id, "Latest issue", "Latest description");
+  assert.equal(run.stops, 0);
+  assert.deepEqual(run.messages, []);
+  assert.equal(h.store.issue(h.id)?.status, "running");
+  run.cb.complete("Finished original task");
+  run.cb.closed();
+  await tick();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(routeState(calls[1].detail).goal, {
+    title: "Latest issue",
+    description: "Latest description",
+  });
+  h.e.stop(h.id);
+  h.e.edit(h.id, "Restarted issue", "Restarted description");
+  h.e.start(h.id);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(routeState(calls[2].detail).goal, {
+    title: "Restarted issue",
+    description: "Restarted description",
+  });
+  calls[1].resolve({ action: "human", detail: "Stale decision" });
+  calls[2].resolve({ action: "done", detail: "Verified" });
+  await tick();
+  assert.equal(h.store.issue(h.id)?.status, "done");
+  assert.equal(h.store.pending(h.id), undefined);
+  assert.equal(h.executions.length, 1);
 });
 test("session chat resumes its binding, persists Human messages and finishes without routing", async () => {
   const h = harness();
@@ -309,6 +415,11 @@ test("native approval pauses execution, survives Stop/Start, and submits once", 
   assert.equal(h.store.issue(h.id)?.status, "waiting_human");
   const r = h.store.pending(h.id)!;
   assert.equal(run.responses.length, 0);
+  h.e.edit(h.id, "Updated during approval", "A new goal for subsequent turns");
+  assert.deepEqual(h.store.pending(h.id), r);
+  assert.equal(h.store.issue(h.id)?.status, "waiting_human");
+  assert.equal(run.responses.length, 0);
+  assert.equal(run.stops, 0);
   h.e.stop(h.id);
   assert.throws(() => h.e.respond(h.id, r.id, "", true), /Start/);
   h.e.start(h.id);
@@ -580,7 +691,7 @@ test("chat history survives reopening and uncertain sends are never replayed on 
     rmSync(dir, { recursive: true });
   }
 });
-test("editing is disabled while running; removing last unused binding resets ready", async () => {
+test("removing the last unused binding resets ready", async () => {
   const h = harness();
   h.e.unbind(h.id, h.binding.id);
   assert.equal(h.store.issue(h.id)?.status, "waiting_binding");

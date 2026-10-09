@@ -54,6 +54,12 @@ try {
       .click();
     await page.getByRole("menuitem", { name: action, exact: true }).click();
   }
+  const readIssue = () =>
+    page.evaluate(async () =>
+      (
+        await fetch("/api/issues/" + decodeURIComponent(location.hash.slice(1)))
+      ).json(),
+    );
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(base);
@@ -204,6 +210,27 @@ try {
   await page.locator(".breadcrumb").click();
   await page.getByRole("button", { name: "Start", exact: true }).click();
   await page.getByRole("button", { name: "Approve", exact: true }).waitFor();
+  const beforeEdit = await readIssue();
+  await page.getByRole("button", { name: "Edit issue", exact: true }).click();
+  await expect(
+    page.getByRole("textbox", { name: "Title", exact: true }),
+  ).toBeFocused();
+  await page
+    .getByRole("textbox", { name: "Description", exact: true })
+    .fill(
+      "Updated goal while awaiting approval. Implement the API and have Pi review the result.",
+    );
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.locator(".description p")).toHaveText(
+    "Updated goal while awaiting approval. Implement the API and have Pi review the result.",
+  );
+  const afterEdit = await readIssue();
+  assert.equal(afterEdit.status, "waiting_human");
+  assert.equal(afterEdit.currentTurnId, beforeEdit.currentTurnId);
+  assert.deepEqual(afterEdit.requests, beforeEdit.requests);
+  await expect(
+    page.getByRole("button", { name: "Approve", exact: true }),
+  ).toBeVisible();
   assert.equal(await page.locator(".comment-composer").count(), 0);
   const humanRequest = page.getByRole("region", {
     name: "Human request",
@@ -275,6 +302,28 @@ try {
     .filter({ hasText: "Done" })
     .waitFor();
   await page.screenshot({ path: "/tmp/catcoon-detail.png", fullPage: true });
+  await page.getByRole("button", { name: "Edit issue", exact: true }).click();
+  await expect(page.getByLabel("Title", { exact: true })).toBeFocused();
+  await page.getByLabel("Title", { exact: true }).fill("Discard this title");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator(".title-row h1")).toHaveText(
+    "Build the Issue workspace",
+  );
+  await page.getByRole("button", { name: "Edit issue", exact: true }).click();
+  await page
+    .getByLabel("Title", { exact: true })
+    .fill("Updated Issue workspace");
+  await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await page.reload();
+  await expect(page.locator(".title-row h1")).toHaveText(
+    "Updated Issue workspace",
+  );
+  await expect(page.locator(".properties-card .badge")).toHaveText("Done");
+  await expect(
+    page.locator(".issue-title .issue-edit .lucide-square-pen"),
+  ).toHaveCount(1);
+  await expect(page.locator(".description .issue-edit")).toHaveCount(0);
+  await expect(page.locator('img[src^="/assets/"]')).toHaveCount(0);
   await bindingAction("Pi", "Open Pi session");
   await page
     .getByText("Task completed and verified.", { exact: true })
@@ -349,7 +398,7 @@ try {
     .first()
     .click();
   await page
-    .getByRole("button", { name: "Build the Issue workspace", exact: true })
+    .getByRole("button", { name: "Updated Issue workspace", exact: true })
     .waitFor();
   await page.screenshot({ path: "/tmp/catcoon-list.png", fullPage: true });
   await page
@@ -359,7 +408,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("textbox", { name: "Search issues" }).fill("");
   await page
-    .getByRole("button", { name: "Build the Issue workspace", exact: true })
+    .getByRole("button", { name: "Updated Issue workspace", exact: true })
     .click();
   await page
     .locator(".properties-card .badge")
@@ -370,6 +419,12 @@ try {
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
     "Mobile page must not overflow",
+  );
+  const mobileTitle = await page.locator(".issue-title").boundingBox();
+  const mobileActions = await page.locator(".workflow-actions").boundingBox();
+  assert.ok(
+    mobileActions.y >= mobileTitle.y + mobileTitle.height,
+    "Mobile workflow controls must leave room for the title and edit icon",
   );
   await page.screenshot({ path: "/tmp/catcoon-mobile.png", fullPage: true });
   await page.setViewportSize({ width: 1440, height: 960 });
@@ -570,7 +625,7 @@ try {
   assert.equal(await humanRequest.count(), 0);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser happy path passed: workflow and approvals, binding policies and menus, independent directories and validation, locked sessions, session chat/steering and persistence, failed-submit draft retention, IME/multiline input, Human requests above activity, search and mobile layout.",
+    "Browser happy path passed: workflow and approvals, issue editing during approval and after completion, save/cancel/reload, Lucide icons, binding policies and menus, independent directories and validation, locked sessions, session chat/steering and persistence, failed-submit draft retention, IME/multiline input, Human requests above activity, search and mobile layout.",
   );
 } finally {
   await browser?.close();

@@ -91,7 +91,7 @@ export class Orchestrator extends EventEmitter {
     if (this.store.pending(id) && this.store.pending(id)?.native)
       throw new HttpError(
         409,
-        "Resolve the pending runtime request before changing bindings or the goal.",
+        "Resolve the pending runtime request before changing bindings.",
       );
     return d;
   }
@@ -116,7 +116,7 @@ export class Orchestrator extends EventEmitter {
     return this.require(id);
   }
   edit(id: string, title: string, description: string) {
-    this.assertEdit(id);
+    this.require(id);
     this.store.transaction(() => {
       this.store.update("issues", id, { title, description });
       this.store.activity(id, "Human", "edited", "Updated issue");

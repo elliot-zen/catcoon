@@ -20,6 +20,7 @@ import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 import "./style.css";
 import { sessionTools } from "./session-tools";
+import { Icon } from "./icons";
 type Row = Issue & { bindings: Binding[]; runningAgent: string | null };
 type Config = {
   workspace: string;
@@ -61,13 +62,6 @@ async function api<T>(
   if (!res.ok)
     throw new ApiError(result.error || "Request failed.", result.field);
   return result;
-}
-function Icon({ name }: { name: string }) {
-  return (
-    <span className={`icon icon-${name}`}>
-      <img src={`/assets/${name}.svg`} alt="" />
-    </span>
-  );
 }
 function Badge({ status }: { status: Status }) {
   return (
@@ -243,6 +237,11 @@ function App() {
     setEditingBinding(b);
     setModal("binding");
   }
+  function editIssue() {
+    setMore(false);
+    setError("");
+    setModal("edit");
+  }
   const group = (i: Row, f: string) =>
     f === "All issues" ||
     (f === "Running" &&
@@ -331,7 +330,8 @@ function App() {
                     setModal("create");
                   }}
                 >
-                  {"+  New issue"}
+                  <Icon name="plus" />
+                  New issue
                 </button>
               </div>
               <div className="list-toolbar">
@@ -480,7 +480,18 @@ function App() {
                   </section>
                 )}
                 <div className="title-row">
-                  <h1>{detail.title}</h1>
+                  <div className="issue-title">
+                    <h1>{detail.title}</h1>
+                    <button
+                      className="plain issue-edit"
+                      aria-label="Edit issue"
+                      title="Edit issue"
+                      disabled={busy}
+                      onClick={editIssue}
+                    >
+                      <Icon name="edit" />
+                    </button>
+                  </div>
                   <div className="workflow-actions">
                     <button
                       className="primary"
@@ -514,18 +525,14 @@ function App() {
                         aria-label="More actions"
                         onClick={() => setMore(!more)}
                       >
-                        •••
+                        <Icon name="more" />
                       </button>
                       {more && (
                         <div className="more-menu">
                           <button
                             className="plain"
-                            disabled={!editable(detail.status)}
-                            onClick={() => {
-                              setMore(false);
-                              setError("");
-                              setModal("edit");
-                            }}
+                            disabled={busy}
+                            onClick={editIssue}
                           >
                             Edit
                           </button>
@@ -671,12 +678,14 @@ function App() {
                     <span>{detail.bindings.length}</span>
                     <button
                       className="plain"
+                      aria-label="+ Add"
                       disabled={
                         !editable(detail.status) || !!pending?.native || busy
                       }
                       onClick={() => openBinding()}
                     >
-                      + Add
+                      <Icon name="plus" />
+                      Add
                     </button>
                   </div>
                   {detail.bindings.map((b, index) => {

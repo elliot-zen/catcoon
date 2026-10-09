@@ -70,16 +70,10 @@ button:disabled {
   width: 16px;
   height: 16px;
 }
-.icon img {
+.icon svg {
   display: block;
-}
-.icon-issue img,
-.icon-folder img {
-  position: absolute;
-  top: 0;
-  left: 0;
-  transform: scale(0.6666667);
-  transform-origin: 0 0;
+  width: 100%;
+  height: 100%;
 }
 .icon-chevron-right {
   width: 12px;
@@ -397,6 +391,34 @@ tbody tr:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.issue-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.issue-title h1 {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+button.issue-edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 21px;
+  min-height: 0;
+  padding: 2px;
+  border-radius: 4px;
+  opacity: 0.6;
+}
+button.issue-edit:hover,
+button.issue-edit:focus-visible {
+  opacity: 1;
+  background: var(--soft);
 }
 .workflow-actions {
   display: flex;
@@ -1318,6 +1340,7 @@ pre {
   }
   .title-row h1 {
     white-space: normal;
+    overflow-wrap: anywhere;
   }
   .workflow-actions {
     gap: 8px;
@@ -1379,6 +1402,13 @@ pre {
   }
   .title-row {
     flex-wrap: wrap;
+  }
+  .issue-title {
+    flex-basis: 100%;
+    align-items: flex-start;
+  }
+  .issue-title .issue-edit {
+    margin-top: 5px;
   }
   .title-row h1 {
     font-size: 24px;

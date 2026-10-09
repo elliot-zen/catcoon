@@ -48,7 +48,7 @@ Agent 的功能由绑定内容决定。例如 Codex 可以负责实现，Pi 可�
 
 有效 Binding 指 runtime 类型受支持、功能描述非空且执行配置完整；runtime 是否在线在执行前检查。绑定不要求先创建会话；会话可以在首次执行时创建。
 
-第一版只在 `waiting_binding`、`ready`、`stopped` 中允许编辑标题、描述及绑定。删除最后一个 Binding 时，未启动的 Issue 回到 `waiting_binding`；已停止的 Issue 保持 `stopped`，再次 Start 时要求补齐 Binding。
+标题旁提供一个 SquarePen 编辑图标，可在任何状态下打开表单编辑标题和描述。保存只更新 Issue 内容，不中断当前执行或重发已发出的 Jev 请求，也不改变待审批请求；每次新的 Jev 决策读取最新标题和描述。需要立即按新目标执行时，由 Human 手动 Stop 后再 Start。Binding 仍只在 `waiting_binding`、`ready`、`stopped` 中允许修改。删除最后一个 Binding 时，未启动的 Issue 回到 `waiting_binding`；已停止的 Issue 保持 `stopped`，再次 Start 时要求补齐 Binding。
 
 ### 3.2 Start
 
@@ -96,6 +96,8 @@ Stop 优先于尚未提交的路由或完成决策；已提交的 `done` 不再�
 ## 4. Issue 状态定义
 
 Issue 状态是业务状态的唯一来源。当前 Agent、turn 状态和列表筛选均从它及关联记录派生，不使用多个相互独立的运行开关表达同一事实。
+
+所有状态均支持编辑 Issue 标题和描述，下表列出其他主要操作。
 
 | 状态值 | 展示名称 | 含义 | 是否自动推进 | 可用的主要操作 |
 | --- | --- | --- | --- | --- |
