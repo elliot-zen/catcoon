@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
+import { createServer as createHttpServer } from "node:http";
 import { Store } from "./store.js";
 import { Orchestrator } from "./orchestrator.js";
 import { createApp } from "./app.js";
@@ -32,6 +33,8 @@ const store = new Store(resolve(data, "catcoon.sqlite"));
 const engine = new Orchestrator(store);
 engine.recover();
 const app = createApp(engine);
+const server = createHttpServer(app);
+let vite: import("vite").ViteDevServer | undefined;
 if (process.argv.includes("--production")) {
   if (!existsSync("dist/index.html"))
     throw new Error("Run npm run build before npm start.");
@@ -40,14 +43,14 @@ if (process.argv.includes("--production")) {
   app.get("/{*path}", (_req, res) => res.sendFile(resolve("dist/index.html")));
 } else {
   const { createServer } = await import("vite");
-  const vite = await createServer({
-    server: { middlewareMode: true },
+  vite = await createServer({
+    server: { middlewareMode: true, ws: { server } },
     appType: "spa",
   });
   app.use(vite.middlewares);
 }
 const port = Number(process.env.PORT || 3000);
-const server = app.listen(port, "127.0.0.1", () =>
+server.listen(port, "127.0.0.1", () =>
   console.log(`Catcoon is running at http://localhost:${port}`),
 );
 let shutting = false;
@@ -55,6 +58,7 @@ async function shutdown() {
   if (shutting) return;
   shutting = true;
   await engine.shutdown();
+  await vite?.close();
   server.close();
   server.closeAllConnections();
   store.close();

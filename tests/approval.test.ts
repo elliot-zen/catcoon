@@ -118,6 +118,55 @@ test("binding API validates levels, preserves omitted edits, and defaults on run
   }
 });
 
+test("legacy Codex Automatic migrates without expanding access; explicit full access survives restart", () => {
+  const dir = mkdtempSync(join(tmpdir(), "catcoon-auto-migrate-"));
+  const path = join(dir, "legacy.sqlite");
+  let store = new Store(path);
+  try {
+    const engine = new Orchestrator(store);
+    const issue = engine.createIssue("Upgrade", "Keep old permissions");
+    for (const runtime of ["codex", "pi"] as const)
+      engine.bind(issue.id, {
+        name: runtime,
+        runtime,
+        approvalLevel: "automatic",
+        role: "Build",
+        cwd: process.cwd(),
+        model: "",
+      });
+    const binding = store.bindings(issue.id)[0];
+    store.update("bindings", binding.id, { sessionId: "preserved-thread" });
+    // Reproduce an existing database from before this migration existed.
+    store.db.exec("PRAGMA user_version=0");
+    store.close();
+    store = new Store(path);
+    assert.deepEqual(
+      store.bindings(issue.id).map((b) => b.approvalLevel),
+      ["on-request", "automatic"],
+    );
+    assert.equal(store.bindings(issue.id)[0].sessionId, "preserved-thread");
+    assert.equal(
+      store
+        .detail(issue.id)!
+        .activities.filter((a) => a.type === "approval_migrated").length,
+      1,
+    );
+    store.update("bindings", binding.id, { approvalLevel: "automatic" });
+    store.close();
+    store = new Store(path);
+    assert.equal(store.bindings(issue.id)[0].approvalLevel, "automatic");
+    assert.equal(
+      store
+        .detail(issue.id)!
+        .activities.filter((a) => a.type === "approval_migrated").length,
+      1,
+    );
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test("Pi on-request checks workspace writes including symlinks and rejects compound shell auto-approval", () => {
   const dir = mkdtempSync(join(tmpdir(), "catcoon-policy-"));
   const cwd = join(dir, "workspace");

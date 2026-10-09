@@ -19,6 +19,7 @@ import {
 import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 import "./style.css";
+import { sessionTools } from "./session-tools";
 type Row = Issue & { bindings: Binding[]; runningAgent: string | null };
 type Config = {
   workspace: string;
@@ -28,7 +29,7 @@ type Config = {
 const labels: Record<Status, string> = {
   waiting_binding: "Waiting for binding",
   ready: "Open",
-  routing: "Running",
+  routing: "Routing",
   running: "Running",
   waiting_human: "Needs attention",
   stopping: "Stopping",
@@ -59,7 +60,11 @@ function Icon({ name }: { name: string }) {
   );
 }
 function Badge({ status }: { status: Status }) {
-  return <span className="badge">{labels[status]}</span>;
+  return (
+    <span className={`badge badge-${status}`} data-status={status}>
+      {labels[status]}
+    </span>
+  );
 }
 function time(value: string) {
   return new Date(value).toLocaleTimeString("en-GB", {
@@ -243,9 +248,11 @@ function App() {
     (b) => b.id === current?.bindingId,
   );
   const pending = detail?.requests.find((r) => r.status === "pending");
-  const pendingActivity = detail?.activities.find(
-    (a) => a.type === "human_requested" && a.summary === pending?.title,
-  );
+  const humanRequestRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (pending && !session)
+      humanRequestRef.current?.scrollIntoView({ block: "start" });
+  }, [pending?.id, session]);
 
   const activities =
     detail?.activities.filter(
@@ -400,10 +407,60 @@ function App() {
               </div>
             </section>
           ) : detail && session ? (
-            <SessionPage detail={detail} bindingId={session} />
+            <SessionPage
+              key={`${detail.id}:${session}`}
+              detail={detail}
+              bindingId={session}
+              refresh={refresh}
+              openIssue={() => setSession(null)}
+            />
           ) : detail ? (
             <section className="detail-layout" data-node-id="10:2373">
               <div className="detail-main">
+                {pending && (
+                  <section
+                    ref={humanRequestRef}
+                    className="human-request"
+                    aria-label="Human request"
+                  >
+                    <div className="activity-title">
+                      <strong>Human · {pending.title}</strong>
+                      <time>{time(pending.createdAt)}</time>
+                    </div>
+                    {detail.status === "waiting_human" ? (
+                      <RequestActions
+                        key={pending.id}
+                        request={pending}
+                        busy={busy}
+                        inspect={() =>
+                          setInspect({
+                            id: pending.id,
+                            issueId: detail.id,
+                            actor: "Human",
+                            type: "request",
+                            summary: pending.title,
+                            detail: pending.detail,
+                            createdAt: pending.createdAt,
+                          })
+                        }
+                        submit={(answer, approved) =>
+                          perform(() =>
+                            api(
+                              `/issues/${detail.id}/requests/${pending.id}`,
+                              "POST",
+                              { answer, approved },
+                            ),
+                          )
+                        }
+                      />
+                    ) : (
+                      <p className="muted">
+                        This request is pending. Start the issue to approve or
+                        answer it.
+                      </p>
+                    )}
+                  </section>
+                )}
                 <div className="title-row">
                   <h1>{detail.title}</h1>
                   <div className="workflow-actions">
@@ -459,12 +516,6 @@ function App() {
                     </div>
                   </div>
                 </div>
-                <div className="metadata">
-                  <Badge status={detail.status} />
-                  <Icon name="folder" />
-                  <span>Agent platform</span>
-                  <span>{`·  Created by ${(detail as Detail & { createdBy?: string }).createdBy || "you"}  ·  ${date(detail.createdAt)}`}</span>
-                </div>
                 <div className="description">
                   <h3>Description</h3>
                   <p>{detail.description}</p>
@@ -510,7 +561,6 @@ function App() {
                         decision?.output?.detail ||
                         decision?.detail ||
                         a.detail;
-                      const related = pending && a.id === pendingActivity?.id;
                       return (
                         <article
                           className={`activity ${a.actor === "Jev" ? "jev-activity" : ""}`}
@@ -533,81 +583,79 @@ function App() {
                                 </button>
                               )}
                             </div>
-                            {related && detail.status === "waiting_human" ? (
-                              <RequestActions
-                                request={pending}
-                                busy={busy}
-                                inspect={() => setInspect(a)}
-                                submit={(answer, approved) =>
-                                  perform(() =>
-                                    api(
-                                      `/issues/${detail.id}/requests/${pending.id}`,
-                                      "POST",
-                                      { answer, approved },
-                                    ),
-                                  )
-                                }
-                              />
-                            ) : (
-                              summary && <p>{summary}</p>
-                            )}
+                            {summary && <p>{summary}</p>}
                           </div>
                         </article>
                       );
                     })}
-                    {pending &&
-                      detail.status === "waiting_human" &&
-                      !activities.some(
-                        (a) =>
-                          a.type === "human_requested" &&
-                          a.summary === pending.title,
-                      ) && (
-                        <article className="activity">
-                          <span className="avatar">H</span>
-                          <div className="activity-content">
-                            <div className="activity-title">
-                              <strong>{pending.title}</strong>
-                              <time>{time(pending.createdAt)}</time>
-                            </div>
-                            <RequestActions
-                              request={pending}
-                              busy={busy}
-                              inspect={() =>
-                                setInspect({
-                                  id: pending.id,
-                                  issueId: detail.id,
-                                  actor: "Human",
-                                  type: "request",
-                                  summary: pending.title,
-                                  detail: pending.detail,
-                                  createdAt: pending.createdAt,
-                                })
-                              }
-                              submit={(answer, approved) =>
-                                perform(() =>
-                                  api(
-                                    `/issues/${detail.id}/requests/${pending.id}`,
-                                    "POST",
-                                    { answer, approved },
-                                  ),
-                                )
-                              }
-                            />
-                          </div>
-                        </article>
-                      )}
                   </div>
                 </section>
-                <Composer comment />
               </div>
               <aside className="detail-aside">
+                <section
+                  className="properties-card"
+                  aria-label="Issue properties"
+                >
+                  <h3>Properties</h3>
+                  <dl>
+                    <dt>Status</dt>
+                    <dd>
+                      <Badge status={detail.status} />
+                    </dd>
+                    <dt>Folder</dt>
+                    <dd className="property-folder">
+                      <Icon name="folder" />
+                      <span>Agent platform</span>
+                    </dd>
+                    <dt>Created by</dt>
+                    <dd>
+                      {(detail as Detail & { createdBy?: string }).createdBy ||
+                        "you"}
+                    </dd>
+                    <dt>Created</dt>
+                    <dd>
+                      <time
+                        dateTime={detail.createdAt}
+                        title={new Date(detail.createdAt).toLocaleString()}
+                      >
+                        {date(detail.createdAt)}
+                      </time>
+                    </dd>
+                    <dt>Updated</dt>
+                    <dd>
+                      <time
+                        dateTime={detail.updatedAt}
+                        title={new Date(detail.updatedAt).toLocaleString()}
+                      >
+                        {date(detail.updatedAt)}
+                      </time>
+                    </dd>
+                    {detail.completedAt && (
+                      <>
+                        <dt>Completed</dt>
+                        <dd>
+                          <time
+                            dateTime={detail.completedAt}
+                            title={new Date(
+                              detail.completedAt,
+                            ).toLocaleString()}
+                          >
+                            {date(detail.completedAt)}
+                          </time>
+                        </dd>
+                      </>
+                    )}
+                  </dl>
+                </section>
                 <div className="binding-card">
                   <div className="binding-heading">
                     <h3>Binding agents</h3>
                     <span>{detail.bindings.length}</span>
                     <button
                       className="plain"
-                      disabled={!editable(detail.status)}
+                      disabled={
+                        !editable(detail.status) || !!pending?.native || busy
+                      }
                       onClick={() => openBinding()}
                     >
                       + Add
@@ -655,17 +703,13 @@ function App() {
                               ]
                             }
                           </span>
-                          <button
-                            className="plain"
-                            aria-label={`Edit ${b.name} binding`}
-                            disabled={
-                              !editable(detail.status) || !!pending || busy
-                            }
-                            onClick={() => openBinding(b)}
-                          >
-                            Edit
-                          </button>
                         </div>
+                        <BindingActions
+                          binding={b}
+                          canEdit={editable(detail.status) && !busy}
+                          edit={() => openBinding(b)}
+                          session={() => setSession(b.id)}
+                        />
                       </div>
                     );
                   })}
@@ -713,6 +757,7 @@ function App() {
             config={config}
             busy={busy}
             canEdit={editable(detail.status)}
+            approvalOnly={!!pending?.native}
             close={() => setModal(null)}
             submit={(data) =>
               perform(
@@ -738,6 +783,116 @@ function App() {
             <button onClick={() => setError("")}>Close</button>
           </div>
         </Dialog>
+      )}
+    </div>
+  );
+}
+function BindingActions({
+  binding,
+  canEdit,
+  edit,
+  session,
+}: {
+  binding: Binding;
+  canEdit: boolean;
+  edit: () => void;
+  session: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    ref.current
+      ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+      ?.focus();
+    const outside = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [open]);
+  return (
+    <div
+      className="binding-actions more-wrap"
+      ref={ref}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setOpen(false);
+          trigger.current?.focus();
+        }
+        if (
+          open &&
+          ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+        ) {
+          event.preventDefault();
+          const items = Array.from(
+            ref.current!.querySelectorAll<HTMLButtonElement>(
+              '[role="menuitem"]:not(:disabled)',
+            ),
+          );
+          const current = items.indexOf(
+            document.activeElement as HTMLButtonElement,
+          );
+          const next =
+            event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? items.length - 1
+                : (current +
+                    (event.key === "ArrowDown" ? 1 : -1) +
+                    items.length) %
+                  items.length;
+          items[next]?.focus();
+        }
+      }}
+    >
+      <button
+        ref={trigger}
+        className="plain more-button"
+        aria-label={`${binding.name} binding actions`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={`binding-menu-${binding.id}`}
+        onClick={() => setOpen(!open)}
+      >
+        <Icon name="more" />
+      </button>
+      {open && (
+        <div
+          className="more-menu"
+          role="menu"
+          aria-label={`${binding.name} binding actions`}
+          id={`binding-menu-${binding.id}`}
+        >
+          <button
+            className="plain"
+            role="menuitem"
+            aria-label={`Edit ${binding.name} binding`}
+            disabled={!canEdit}
+            onClick={() => {
+              setOpen(false);
+              edit();
+            }}
+          >
+            Edit
+          </button>
+          <button
+            className="plain"
+            role="menuitem"
+            aria-label={`Open ${binding.name} session`}
+            onClick={() => {
+              setOpen(false);
+              session();
+            }}
+          >
+            Session
+          </button>
+        </div>
       )}
     </div>
   );
@@ -801,6 +956,7 @@ function BindingForm({
   config,
   busy,
   canEdit,
+  approvalOnly = false,
   close,
   submit,
 }: {
@@ -808,6 +964,7 @@ function BindingForm({
   config: Config | null;
   busy: boolean;
   canEdit: boolean;
+  approvalOnly?: boolean;
   close: () => void;
   submit: (data: unknown) => void;
 }) {
@@ -820,7 +977,9 @@ function BindingForm({
   return (
     <>
       <p className="dialog-description">
-        Configure an agent’s responsibility and approval level for this Issue.
+        {approvalOnly
+          ? "Update the approval level for future turns. The suspended turn keeps its current policy and pending request."
+          : "Configure an agent’s responsibility and approval level for this Issue."}
       </p>
       <form
         className="dialog-form"
@@ -846,7 +1005,8 @@ function BindingForm({
           <div className="select-field">
             <select
               value={runtime}
-              disabled={!canEdit || busy}
+              aria-label="Agent runtime"
+              disabled={!canEdit || busy || approvalOnly}
               onChange={(e) => {
                 const next = e.target.value as "codex" | "pi";
                 setRuntime(next);
@@ -866,10 +1026,10 @@ function BindingForm({
         <label>
           Agent description
           <input
-            autoFocus
+            autoFocus={!approvalOnly}
             required
             value={role}
-            disabled={!canEdit || busy}
+            disabled={!canEdit || busy || approvalOnly}
             onChange={(e) => setRole(e.target.value)}
           />
         </label>
@@ -879,6 +1039,7 @@ function BindingForm({
             <div className="select-field">
               <select
                 value={approvalLevel}
+                autoFocus={approvalOnly}
                 aria-label="Approval level"
                 disabled={!canEdit || busy}
                 aria-describedby="approval-description approval-runtime"
@@ -900,7 +1061,9 @@ function BindingForm({
           </p>
           <p id="approval-runtime">
             {runtime === "codex"
-              ? "Codex · Sandbox restrictions remain enabled."
+              ? approvalLevel === "automatic"
+                ? "Codex · Full access; sandbox disabled."
+                : "Codex · Sandbox restrictions enabled; approvals reviewed by you."
               : "Pi · Tools use the permissions of the running environment."}
           </p>
         </div>
@@ -953,6 +1116,13 @@ function RequestActions({
             <span className="request-subject">{r.title}</span>
             <span className="muted">Waiting for review</span>
             <button onClick={inspect}>View diff</button>
+            {r.native?.method === "mcpServer/elicitation/request" &&
+              r.native.params.mode === "url" &&
+              /^https?:\/\//.test(r.native.params.url) && (
+                <a href={r.native.params.url} target="_blank" rel="noreferrer">
+                  Complete verification
+                </a>
+              )}
             <button disabled={busy} onClick={() => setFeedback(!feedback)}>
               Reject
             </button>
@@ -988,6 +1158,9 @@ function RequestActions({
           }}
         >
           <p>{r.detail}</p>
+          {r.native?.method === "mcpServer/elicitation/request" && (
+            <p>Enter a JSON object matching the requested form fields.</p>
+          )}
           {questions.length ? (
             questions.map((q) => (
               <label key={q.id}>
@@ -1082,46 +1255,124 @@ function DecisionDialog({
 }
 function Composer({
   agent,
-  comment = false,
+  value,
+  onChange,
+  send,
+  sending,
+  blocked,
 }: {
-  agent?: string;
-  comment?: boolean;
+  agent: string;
+  value: string;
+  onChange: (value: string) => void;
+  send: () => void;
+  sending: boolean;
+  blocked: boolean;
 }) {
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   return (
-    <div
-      className={comment ? "comment-composer" : "chat-composer"}
-      aria-label={comment ? "Comment composer" : "Message composer"}
+    <form
+      className="chat-composer"
+      aria-label="Message composer"
+      onClick={(e) => {
+        if (!(e.target as HTMLElement).closest("button"))
+          inputRef.current?.focus();
+      }}
+      onSubmit={(e) => {
+        e.preventDefault();
+        send();
+      }}
     >
       <textarea
-        readOnly
-        aria-label={comment ? "Comment" : `Message ${agent}`}
-        placeholder={comment ? "Leave a comment…" : `Message ${agent}…`}
+        ref={inputRef}
+        aria-label={`Message ${agent}`}
+        placeholder={`Message ${agent}…`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        maxLength={20000}
+        readOnly={sending}
+        onKeyDown={(e) => {
+          if (
+            e.key === "Enter" &&
+            !e.shiftKey &&
+            !e.nativeEvent.isComposing &&
+            e.keyCode !== 229
+          ) {
+            e.preventDefault();
+            send();
+          }
+        }}
       />
       <div className="composer-controls">
-        <button className="plain" disabled aria-label="Attach file">
-          <Icon name={comment ? "comment-attach" : "attach"} />
-        </button>
+        <span className="muted">
+          {sending ? "Sending…" : "Enter to send · Shift+Enter for a new line"}
+        </span>
         <button
-          className={comment ? "plain" : "primary"}
-          disabled
+          className="primary"
+          disabled={sending || blocked || !value.trim()}
           aria-label="Send message"
+          type="submit"
         >
-          <Icon name={comment ? "comment-send" : "send"} />
+          <Icon name="send" />
         </button>
       </div>
-    </div>
+    </form>
   );
 }
 function SessionPage({
   detail: d,
   bindingId,
+  refresh,
+  openIssue,
 }: {
   detail: Detail;
   bindingId: string;
+  refresh: () => Promise<void>;
+  openIssue: () => void;
 }) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const inFlight = useRef(false);
+  const historyRef = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
   const binding = d.bindings.find((b) => b.id === bindingId)!;
   const turns = d.turns.filter((t) => t.bindingId === bindingId);
   const latest = turns.at(-1);
+  useEffect(() => {
+    const history = historyRef.current;
+    if (history && follow.current) history.scrollTop = history.scrollHeight;
+  }, [d.messages.at(-1)?.id, latest?.id, latest?.output]);
+  const current = d.turns.find((t) => t.id === d.currentTurnId);
+  const pending = d.requests.find((r) => r.status === "pending");
+  const blocked = pending
+    ? "A human decision is required. Review the request at the top of the issue."
+    : d.status === "running" && current?.bindingId !== bindingId
+      ? "Another agent is working. Wait for it to finish or stop the issue before sending."
+      : ["routing", "stopping", "waiting_human"].includes(d.status)
+        ? "Wait for the current step to finish before sending."
+        : "";
+  async function send() {
+    const message = draft.trim();
+    if (!message || blocked || inFlight.current) return;
+    inFlight.current = true;
+    setSending(true);
+    setError("");
+    try {
+      await api(`/issues/${d.id}/bindings/${bindingId}/messages`, "POST", {
+        message,
+        turnId: d.currentTurnId,
+      });
+      follow.current = true;
+      setDraft("");
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+      await refresh();
+    } finally {
+      inFlight.current = false;
+      setSending(false);
+    }
+  }
   return (
     <section className="session-page" data-node-id="63:475">
       <div className="session-header">
@@ -1131,109 +1382,242 @@ function SessionPage({
       <p className="session-meta">
         {binding.role} · Session {binding.sessionId || "—"}
       </p>
-      <div className="conversation-history">
+      <div
+        className="conversation-history"
+        ref={historyRef}
+        onScroll={(e) => {
+          const element = e.currentTarget;
+          follow.current =
+            element.scrollHeight - element.scrollTop - element.clientHeight <
+            80;
+        }}
+      >
+        {!turns.length && <p className="muted">No session history yet.</p>}
         {turns.map((t) => (
           <SessionTurn
             key={t.id}
             turn={t}
-            index={d.turns.indexOf(t) + 1}
             detail={d}
             initiallyExpanded={t.id === latest?.id}
           />
         ))}
       </div>
-      <Composer agent={binding.name} />
+      <div className="session-compose">
+        {blocked && (
+          <div className="session-notice" role="status">
+            <span>{blocked}</span>
+            <button onClick={openIssue}>Open issue</button>
+          </div>
+        )}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <Composer
+          agent={binding.name}
+          value={draft}
+          onChange={setDraft}
+          send={() => void send()}
+          sending={sending}
+          blocked={!!blocked}
+        />
+      </div>
     </section>
   );
 }
 function SessionTurn({
   turn: t,
-  index,
   detail: d,
   initiallyExpanded,
 }: {
   initiallyExpanded: boolean;
   turn: Turn;
-  index: number;
   detail: Detail;
 }) {
   const [expanded, setExpanded] = useState(initiallyExpanded);
+  const [clock, setClock] = useState(Date.now);
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
+  const active = t.status === "running" && !t.endedAt;
+  useEffect(() => {
+    if (!active) return;
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [active]);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
   const messages = d.messages.filter((m) => m.turnId === t.id);
   const text =
     t.output ||
     messages
       .filter((m) => m.kind === "assistant_delta")
       .map((m) => m.text)
-      .join("");
-  const tools = messages.filter((m) => m.kind === "tool");
-  const runningTools = tools.filter(
-    (m) => parse(m.text)?.status === "Running",
-  ).length;
+      .join("") ||
+    messages.filter((m) => m.kind === "assistant").at(-1)?.text ||
+    "";
+  const tools = sessionTools(messages);
+  const thinking = active && !text && !tools.length;
   const elapsed = Math.max(
     0,
     Math.floor(
-      (Date.parse(t.endedAt || new Date().toISOString()) -
-        Date.parse(t.startedAt)) /
+      ((t.endedAt ? Date.parse(t.endedAt) : clock) - Date.parse(t.startedAt)) /
         1000,
     ),
   );
   const instruction =
-    t.input.split("Task: ")[1]?.split("\n\nPrevious turns:")[0] || t.input;
+    t.input
+      .split("Task: ")[1]
+      ?.split(/\n\n(?:Execution mode:|Previous turns:)/)[0] || t.input;
+  const human = messages.find((m) => m.kind === "user");
+  const steered = messages.some((m) =>
+    ["user_steer", "user_pending", "user_unconfirmed"].includes(m.kind),
+  );
+  const conversation: {
+    id: number;
+    kind: "assistant" | "user" | "pending" | "unconfirmed";
+    text: string;
+  }[] = [];
+  let deltaSeen = false;
+  for (const m of messages) {
+    if (["user_steer", "user_pending", "user_unconfirmed"].includes(m.kind)) {
+      conversation.push({
+        id: m.id,
+        kind:
+          m.kind === "user_pending"
+            ? "pending"
+            : m.kind === "user_unconfirmed"
+              ? "unconfirmed"
+              : "user",
+        text: m.text,
+      });
+    } else if (
+      m.kind === "assistant_delta" ||
+      (m.kind === "assistant" && !deltaSeen)
+    ) {
+      const previous = conversation.at(-1);
+      if (previous?.kind === "assistant") previous.text += m.text;
+      else conversation.push({ id: m.id, kind: "assistant", text: m.text });
+      if (m.kind === "assistant_delta") deltaSeen = true;
+    } else if (m.kind === "assistant") {
+      deltaSeen = false;
+    }
+  }
+  const streamed = conversation
+    .filter((entry) => entry.kind === "assistant")
+    .map((entry) => entry.text)
+    .join("");
+  const progress = thinking
+    ? "Thinking…"
+    : t.status === "waiting_approval"
+      ? "Waiting for approval"
+      : t.status === "failed"
+        ? `Failed after ${elapsed} s`
+        : t.status === "interrupted"
+          ? `Interrupted after ${elapsed} s`
+          : `${active ? "Working" : "Worked"} for ${elapsed} s`;
+  async function copyAnswer() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setCopyError("");
+    } catch {
+      setCopyError("Could not copy the answer. Select the text to copy it.");
+    }
+  }
   return (
     <section className="session-turn">
-      {!initiallyExpanded && (
-        <div className="turn-heading">
-          <button className="plain" onClick={() => setExpanded(!expanded)}>
-            {t.status === "running" ? "Working" : "Worked"} for {elapsed}s
-            <Icon name="chevron-right" />
-          </button>
-          <span>
-            Turn {String(index).padStart(2, "0")} · {time(t.startedAt)}
-          </span>
+      {(human?.text || instruction) && (
+        <div className="task-message">
+          {!human && <strong>Jev</strong>}
+          <p>{human?.text || instruction}</p>
         </div>
       )}
-      {expanded && (
-        <>
-          <div className="task-message">
-            <strong>Jev</strong>
-            <p>{instruction}</p>
+      <div className="agent-answer">
+        <div className={`turn-heading ${thinking ? "thinking" : ""}`}>
+          {tools.length ? (
+            <button
+              className="plain"
+              aria-expanded={expanded}
+              aria-label={`${progress}, ${expanded ? "hide" : "show"} tool activity`}
+              onClick={() => setExpanded(!expanded)}
+            >
+              {progress}
+              <Icon name={expanded ? "chevron-down" : "chevron-right"} />
+            </button>
+          ) : (
+            <span>{progress}</span>
+          )}
+        </div>
+        {tools.length > 0 && expanded && (
+          <div className="tool-trace" aria-label="Tool activity">
+            {tools.map((tool) => (
+              <details
+                key={tool.id}
+                className={`session-tool tool-${tool.status}`}
+              >
+                <summary>
+                  <span className="tool-status" aria-label={tool.status} />
+                  <span>{tool.label}</span>
+                </summary>
+                <pre>{tool.detail}</pre>
+              </details>
+            ))}
           </div>
-          <div className="agent-answer">
-            <div className="turn-heading">
-              <span>
-                {t.status === "running" ? "Working" : "Worked"} for {elapsed}s
-              </span>
-              <Icon name="chevron-right" />
-            </div>
-            {text && <p className="answer-text">{text}</p>}
-            {tools.length > 0 && (
-              <>
-                <p className="tool-count">
-                  {tools.length} tool calls
-                  {runningTools > 0 && ` · ${runningTools} running`}
-                </p>
-                <div className="tool-trace">
-                  {tools.map((m) => {
-                    const tool = parse(m.text);
-                    return (
-                      <details key={m.id}>
-                        <summary>
-                          {tool?.toolName ||
-                            tool?.command ||
-                            tool?.type ||
-                            "Tool execution"}{" "}
-                          · {tool?.status || "Completed"}
-                        </summary>
-                        <pre>{m.text}</pre>
-                      </details>
-                    );
-                  })}
-                </div>
-              </>
-            )}
+        )}
+        {!steered && text && <p className="answer-text">{text}</p>}
+        {steered &&
+          conversation.map((entry) =>
+            entry.kind === "assistant" ? (
+              <p key={entry.id} className="answer-text">
+                {entry.text}
+              </p>
+            ) : (
+              <div key={entry.id} className="task-message">
+                {entry.kind !== "user" && (
+                  <strong>
+                    {entry.kind === "pending" ? "Sending…" : ""}
+                    {entry.kind === "unconfirmed"
+                      ? " · Delivery unconfirmed after restart"
+                      : ""}
+                  </strong>
+                )}
+                <p>{entry.text}</p>
+              </div>
+            ),
+          )}
+        {steered &&
+          t.status === "completed" &&
+          t.output &&
+          !streamed.endsWith(t.output) && (
+            <p className="answer-text">{t.output}</p>
+          )}
+        {steered && t.status === "failed" && t.output && (
+          <p className="form-error" role="alert">
+            {t.output}
+          </p>
+        )}
+        {t.status === "completed" && text && (
+          <div className="answer-actions">
+            <button
+              className="plain copy-answer"
+              aria-label={copied ? "Answer copied" : "Copy answer"}
+              onClick={() => void copyAnswer()}
+            >
+              <Icon name="copy" />
+            </button>
+            {copied && <span role="status">Copied</span>}
           </div>
-        </>
-      )}
+        )}
+        {copyError && (
+          <p className="form-error" role="alert">
+            {copyError}
+          </p>
+        )}
+      </div>
     </section>
   );
 }

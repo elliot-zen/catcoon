@@ -2,9 +2,9 @@ import type { ApprovalLevel, Runtime } from "./types.js";
 
 export const approvalLevels = ["strict", "on-request", "automatic"] as const;
 export const approvalLabels: Record<ApprovalLevel, string> = {
-  strict: "Strict",
-  "on-request": "On request",
-  automatic: "Automatic",
+  strict: "Strict approval",
+  "on-request": "On-request approval",
+  automatic: "Fully automatic",
 };
 export const defaultApprovalLevel = (runtime: Runtime): ApprovalLevel =>
   runtime === "pi" ? "strict" : "on-request";
@@ -19,7 +19,7 @@ export const approvalDescriptions: Record<
     "on-request":
       "Allow workspace changes and routine commands. Ask when Codex needs additional permissions.",
     automatic:
-      "Run without approval prompts inside the workspace sandbox. Operations outside its permissions remain blocked.",
+      "Run enabled tools without manual approval or automatic review, with full filesystem and network access. Host and organization restrictions still apply.",
   },
   pi: {
     strict:
@@ -27,7 +27,7 @@ export const approvalDescriptions: Record<
     "on-request":
       "Allow workspace file changes and simple read commands (pwd, ls, cat, head, tail, wc). Ask before other operations.",
     automatic:
-      "Run tools without approval prompts, using the permissions of the Pi process.",
+      "Run tools without manual approval or automatic review, using the permissions of the Pi process. Host restrictions still apply.",
   },
 };
 
@@ -35,6 +35,11 @@ export function codexApprovalSettings(level: ApprovalLevel) {
   return {
     approvalPolicy: level === "automatic" ? "never" : "on-request",
     approvalsReviewer: "user",
-    sandbox: level === "strict" ? "read-only" : "workspace-write",
+    sandbox:
+      level === "automatic"
+        ? "danger-full-access"
+        : level === "strict"
+          ? "read-only"
+          : "workspace-write",
   };
 }

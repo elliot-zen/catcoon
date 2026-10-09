@@ -20,7 +20,9 @@ process.stdin.on("data", (c) => {
         type: "tool_execution_start",
         approvalLevel: process.env.CATCOON_APPROVAL_LEVEL,
       });
-      if (process.env.CATCOON_APPROVAL_LEVEL === "automatic") {
+      if (m.message === "Chat prompt") {
+        // Keep streaming until a steer arrives.
+      } else if (process.env.CATCOON_APPROVAL_LEVEL === "automatic") {
         emit({
           type: "message_end",
           message: {
@@ -38,6 +40,38 @@ process.stdin.on("data", (c) => {
           title: "Approve write",
           message: "Exact tool input",
         });
+    } else if (m.type === "steer") {
+      if (m.message === "Reject steer") {
+        emit({
+          id: m.id,
+          type: "response",
+          success: false,
+          error: "Steer rejected",
+        });
+      } else {
+        emit({
+          id: m.id,
+          type: "response",
+          success: true,
+          data: { disposition: "queued" },
+        });
+        emit({
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "text_delta",
+            delta: `Received: ${m.message}`,
+          },
+        });
+        emit({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: `Received: ${m.message}` }],
+          },
+        });
+        emit({ type: "agent_settled" });
+      }
     } else if (m.type === "extension_ui_response") {
       emit({
         type: "message_end",

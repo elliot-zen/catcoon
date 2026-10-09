@@ -99,6 +99,7 @@ export interface RuntimeCallbacks {
   closed: () => void;
 }
 export interface RuntimeHandle {
+  send: (message: string) => Promise<void>;
   stop: () => Promise<void>;
   respond: (request: HumanRequest, answer: string, approved: boolean) => void;
   dispose: () => void;

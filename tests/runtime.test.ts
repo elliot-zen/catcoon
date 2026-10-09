@@ -15,6 +15,75 @@ for (const [name, factory] of [
   ["codex", codex],
   ["pi", pi],
 ] as const) {
+  test(
+    `${name}: chat waits for startup, reports steer errors and accepts follow-ups`,
+    { timeout: 5000 },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "catcoon-chat-"));
+      const bin = join(dir, name);
+      copyFileSync(resolve(`tests/fixtures/${name}.mjs`), bin);
+      chmodSync(bin, 0o755);
+      const env = name === "codex" ? "CODEX_BIN" : "PI_BIN";
+      const previous = process.env[env];
+      process.env[env] = bin;
+      let handle: ReturnType<typeof codex> | undefined;
+      try {
+        const messages: string[] = [];
+        let completed = false;
+        let close!: () => void;
+        let fail!: (e: Error) => void;
+        const closed = new Promise<void>((resolve, reject) => {
+          close = resolve;
+          fail = reject;
+        });
+        handle = factory(
+          {
+            id: "b",
+            issueId: "i",
+            name,
+            runtime: name,
+            role: "Chat",
+            cwd: process.cwd(),
+            model: "",
+            approvalLevel: "on-request",
+            sessionId: "existing-session",
+          },
+          "Chat prompt",
+          {
+            spawned() {},
+            session() {},
+            message: (_kind, text) => messages.push(text),
+            request: () => fail(new Error("Unexpected human request")),
+            complete: () => {
+              completed = true;
+            },
+            error: fail,
+            closed: close,
+          },
+        );
+        await assert.rejects(handle.send("Reject steer"), /Steer rejected/);
+        await handle.send("Follow-up 中文");
+        await closed;
+        assert.ok(completed);
+        assert.ok(
+          messages.some((message) =>
+            message.includes("Received: Follow-up 中文"),
+          ),
+        );
+        await assert.rejects(handle.send("Too late"), /turn ended/);
+      } finally {
+        handle?.dispose();
+        if (previous === undefined) delete process.env[env];
+        else process.env[env] = previous;
+        rmSync(dir, { recursive: true });
+      }
+    },
+  );
+}
+for (const [name, factory] of [
+  ["codex", codex],
+  ["pi", pi],
+] as const) {
   for (const [approvalLevel, approved] of [
     ["strict", true],
     ["on-request", true],
@@ -39,7 +108,7 @@ for (const [name, factory] of [
           role: "Test",
           cwd: process.cwd(),
           model: "",
-          sessionId: approvalLevel === "on-request" ? "existing-session" : null,
+          sessionId: approvalLevel !== "strict" ? "existing-session" : null,
         };
         let request!: HumanRequest;
         let output = "",
@@ -122,14 +191,18 @@ for (const [name, factory] of [
             .find((m) => m.configuration)?.configuration;
           assert.equal(
             configuration.sandbox,
-            approvalLevel === "strict" ? "read-only" : "workspace-write",
+            approvalLevel === "automatic"
+              ? "danger-full-access"
+              : approvalLevel === "strict"
+                ? "read-only"
+                : "workspace-write",
           );
           assert.equal(
             configuration.approvalPolicy,
             approvalLevel === "automatic" ? "never" : "on-request",
           );
           assert.equal(configuration.approvalsReviewer, "user");
-          if (approvalLevel === "on-request")
+          if (approvalLevel !== "strict")
             assert.equal(configuration.threadId, "existing-session");
           if (approvalLevel !== "automatic")
             assert.ok(
@@ -166,3 +239,96 @@ test("Codex multi-question answers are validated before replying to a native req
     { target: { answers: ["server"] }, mode: { answers: ["local"] } },
   );
 });
+
+for (const [level, scenario, approved] of [
+  ["strict", "MCP approval", true],
+  ["on-request", "MCP approval", false],
+  ["automatic", "MCP approval", true],
+  ["automatic", "MCP input", false],
+] as const) {
+  test(`Codex MCP: ${level}, ${scenario}, ${approved ? "accept" : "decline/input"}`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "catcoon-mcp-"));
+    const bin = join(dir, "codex");
+    copyFileSync(resolve("tests/fixtures/codex.mjs"), bin);
+    chmodSync(bin, 0o755);
+    const previous = process.env.CODEX_BIN;
+    process.env.CODEX_BIN = bin;
+    let handle: ReturnType<typeof codex> | undefined;
+    try {
+      const binding: Binding = {
+        id: "b",
+        issueId: "i",
+        name: "Codex",
+        runtime: "codex",
+        approvalLevel: level,
+        role: "Build",
+        cwd: process.cwd(),
+        model: "",
+        sessionId: null,
+      };
+      const messages: string[] = [];
+      let requests = 0,
+        completed = false;
+      await new Promise<void>((resolve, reject) => {
+        handle = codex(binding, scenario, {
+          spawned() {},
+          session() {},
+          message: (_kind, text) => messages.push(text),
+          request: (r) => {
+            requests++;
+            try {
+              assert.equal(
+                r.kind,
+                scenario === "MCP input" ? "input" : "approval",
+              );
+              handle!.respond(
+                {
+                  ...r,
+                  id: "r",
+                  issueId: "i",
+                  turnId: "t",
+                  status: "pending",
+                  answer: null,
+                  createdAt: new Date().toISOString(),
+                },
+                scenario === "MCP input"
+                  ? '{"target":"canvas"}'
+                  : "Use another tool",
+                approved,
+              );
+            } catch (e) {
+              reject(e);
+            }
+          },
+          complete: () => {
+            completed = true;
+          },
+          error: reject,
+          closed: resolve,
+        });
+      });
+      assert.equal(completed, true);
+      assert.equal(
+        requests,
+        level === "automatic" && scenario === "MCP approval" ? 0 : 1,
+      );
+      const response = messages
+        .filter((m) => m.startsWith("{"))
+        .map((m) => JSON.parse(m))
+        .find((m) => m.type === "mcpToolCall")?.response;
+      assert.deepEqual(
+        response,
+        scenario === "MCP input"
+          ? { action: "accept", content: { target: "canvas" } }
+          : approved
+            ? { action: "accept", content: { confirmed: true } }
+            : { action: "decline", content: null },
+      );
+    } finally {
+      handle?.dispose();
+      if (previous === undefined) delete process.env.CODEX_BIN;
+      else process.env.CODEX_BIN = previous;
+      rmSync(dir, { recursive: true });
+    }
+  });
+}

@@ -41,6 +41,31 @@ export class Store {
           UPDATE bindings SET approvalLevel='on-request' WHERE runtime='codex';`);
       });
     }
+    // Old Codex Automatic was sandboxed. Do not silently expand its access.
+    const version = this.db.prepare("PRAGMA user_version").get()!;
+    if (Number(version.user_version) < 1) {
+      this.transaction(() => {
+        const affected = this.db
+          .prepare(
+            `SELECT b.id,b.issueId FROM bindings b
+          JOIN issues i ON i.id=b.issueId
+          WHERE b.runtime='codex' AND b.approvalLevel='automatic'`,
+          )
+          .all();
+        this.db.exec(`UPDATE bindings SET approvalLevel='on-request'
+          WHERE runtime='codex' AND approvalLevel='automatic';
+          PRAGMA user_version=1;`);
+        for (const binding of affected) {
+          this.activity(
+            String(binding.issueId),
+            "System",
+            "approval_migrated",
+            "Codex approval level migrated to On-request approval",
+            `Binding ${binding.id}: the previous Automatic mode was sandboxed. Select Fully automatic explicitly to grant full access.`,
+          );
+        }
+      });
+    }
   }
   transaction<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
@@ -151,6 +176,9 @@ export class Store {
   }
   message(turnId: string, kind: string, text: string) {
     this.insert("messages", { turnId, kind, text, createdAt: now() });
+    return Number(
+      this.db.prepare("SELECT last_insert_rowid() AS id").get()!.id,
+    );
   }
   close() {
     this.db.close();

@@ -26,6 +26,8 @@ npm start
 
 `npm run dev` 使用 Vite 开发服务；`npm start` 提供构建后的静态界面。二者都由同一个 Node 服务提供 API，无须另外启动前后端。
 
+开发模式下，Vite 热更新 WebSocket 与 HTTP 共用 `PORT`（默认 `3000`），不额外监听默认热更新端口 `24678`。同时运行多个实例时，为每个实例设置不同的 `PORT` 和 `DATA_DIR`。
+
 ## 使用
 
 1. New issue：填写标题和描述，明确目标与完成标准。
@@ -37,6 +39,8 @@ npm start
 7. Stop：停止自动派发；正在执行的 turn 会先进入 Stopping，收到退出确认后才变为 Stopped。再次 Start 使用已有上下文继续。
 
 活动流可查看每次决策和结果；Agent sessions 提供各 turn 的任务输入、增量回答、工具记录与最终结果。
+
+发给 Jev 的 `state` 直接使用 JSON object，包含 `goal: {title, description}` 和 `history`。`history` 只保留最近一次 Agent 执行；若最新一次已回答的 Human 请求在该轮之后，则按 Agent、Human 顺序附上，最多两条。首次运行为空数组，没有 Agent 历史时可仅包含 Human 回答。每条含 `status/type/agent_id/agent_name/answer`；Agent 使用 Binding ID 和名称，Human 使用 `agent_id: null`、`agent_name: "Human"`。判断 Human 先后使用活动中记录的回答时间，未回答的请求不进入历史。候选 Agent 的职责放在 `questions.decision.criteria` 中；本地完整历史仍保留。
 
 ## 状态与执行规则
 
@@ -50,7 +54,7 @@ npm start
 - Stop 不撤销已经产生的文件或外部效果；等待人工时 Stop 会保留挂起会话和审批，再次 Start 后才能处理。
 - 重启后关闭自动推进，并核对、终止上次遗留的 runtime 进程。Linux 使用 PID 与 `/proc` 进程创建时间避免误认复用的 PID；确认结束后才能重新 Start。
 - 重启会失去原生 RPC 连接，但保留人工请求内容。重新 Start 后先处理该请求，再带历史上下文规划新的 turn；新的工具操作仍需经过 runtime 自己的审批，不自动重放旧操作。
-- 有执行历史的 Binding 保留用于追溯，第一版不能删除，可以在停止后编辑职责。未决原生请求存在时不能修改目标或绑定。
+- 有执行历史的 Binding 保留用于追溯，第一版不能删除，可以在停止后编辑职责。未决原生请求存在时可修改未来轮次的审批级别，目标和其他绑定字段仍需先处理该请求。
 
 ## 技术结构
 
@@ -73,13 +77,21 @@ npm start
 - `server/app.ts`：API 校验与 SSE。
 - `src/main.tsx`、`src/style.css`：列表、详情、绑定、人工决策与会话界面。
 
-Binding agent 可选择三档审批，每个绑定独立保存。已有绑定自动迁移为原来的默认行为：Codex 按需、Pi 严格。停止 Issue 并处理未决请求后，可通过绑定卡片的 Edit 修改级别，下次运行生效，会话历史保留。
+Binding agent 可选择三档审批，每个绑定独立保存。绑定卡片右上角的三点菜单提供 Edit 和 Session，分别打开编辑窗口和该 Agent 的会话界面。停止 Issue 后可以修改审批级别；有未决原生请求时也可保存审批级别，其他绑定字段暂不可修改。新策略从下一轮运行生效；已挂起的 turn 保留原策略和请求，再次 Start 后仍需处理该请求。会话历史保留，运行中禁止编辑。
+
+Session 支持文字聊天，Enter 发送，Shift+Enter 换行。空闲时沿用绑定的原生会话启动一轮，结束后停留在 `stopped`，点击 Start 才继续自动调度；已完成 Issue 的聊天结束后仍为 `done`。运行中只允许向当前 Agent 追加消息（Codex `turn/steer` / Pi `steer`），不创建并行 turn。消息和回复保存在 SQLite，可重新进入会话查看。发送失败保留草稿；等待人工时请先处理 Issue 顶部的审批或回答卡片，聊天不能代替审批。Issue 底部不再显示聊天输入框。
+
+会话中的用户消息靠右并按内容宽度显示。Agent 等待输出时显示轻微闪烁的 Thinking…，开始输出或调用工具后显示每秒更新的 Working for … s，结束后显示固定的 Worked for … s。工具过程在正文上方，点击耗时行可折叠，工具开始与结束事件合并显示，已完成回复支持复制。Issue 详情右侧的 Properties 卡片显示状态、文件夹、创建人和时间信息；不同状态使用不同颜色，列表和会话页同步使用相同状态配色。
 
 | 级别 | Codex | Pi |
 | --- | --- | --- |
-| Strict / 严格 | `read-only` + `on-request`，需要额外权限的操作（包括文件修改）请求审批 | 每次 shell、写入、编辑和其他非只读工具调用请求审批 |
-| On request / 按需 | `workspace-write` + `on-request`，工作区内常规操作直接执行，额外权限由 Codex 发起审批 | 工作区内 write/edit 和简单只读命令 `pwd/ls/cat/head/tail/wc` 直接执行，其他 shell、工作区外写入及未知工具请求审批 |
-| Automatic / 自动 | `workspace-write` + `never`，无审批提示，沙箱仍限制操作 | 无工具审批提示，沿用 Pi 进程的系统权限 |
+| Strict approval / 严格审批 | `read-only` + `on-request`，需要额外权限的操作（包括文件修改）请求人工审批 | 每次 shell、写入、编辑和其他非只读工具调用请求人工审批 |
+| On-request approval / 按需审批 | `workspace-write` + `on-request`，工作区内常规操作直接执行，额外权限由 Codex 发起人工审批 | 工作区内 write/edit 和简单只读命令 `pwd/ls/cat/head/tail/wc` 直接执行，其他 shell、工作区外写入及未知工具请求人工审批 |
+| Fully automatic / 完全自动 | `danger-full-access` + `never`，关闭 Codex 沙箱，已启用工具直接执行，不经人工或自动评审 | 无工具审批，沿用 Pi 进程的系统权限，不经自动评审 |
+
+Codex 的前两档使用 `approvalsReviewer: user`；完全自动不会启用 `auto_review`。`never` 只表示禁止弹出审批，必须搭配 `danger-full-access` 才对应本项目的完全自动。宿主环境、组织策略、工具禁用状态及服务端权限仍有效。旧版本已保存的 Codex Automatic 在首次升级时迁移为按需审批，并记录活动；需要完全自动时请显式重新选择，以免升级静默扩大权限。Pi 已有自动档行为不变。更早版本没有审批字段的绑定仍迁移为 Codex 按需、Pi 严格。
+
+适配器支持 `mcpServer/elicitation/request`：简单确认表单按当前级别审批；完全自动直接同意并写入会话日志。需要填写信息的表单始终等待用户输入 JSON 并按工具提供的 schema 校验；URL 验证需要用户完成外部验证后确认。未支持的验证模式返回取消，不伪造验证结果，也不会因未知请求直接终止整个运行。
 
 Pi 显式加载 Catcoon 审批扩展，关闭自动发现的扩展。只读工具 `read/grep/find/ls` 在各档直接执行；按需模式的 shell 仅放行上述单条命令，重定向、命令组合、替换和转义均需审批。工作区路径检查包含符号链接，但审批门不是操作系统 sandbox。三档均保留 Agent 的人工补充信息请求。
 

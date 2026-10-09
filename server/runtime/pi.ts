@@ -28,6 +28,7 @@ export function pi(
   });
   let finished = false,
     stopping = false,
+    awaitingHuman = false,
     output = "",
     lastError = "";
   cb.session(session);
@@ -79,6 +80,7 @@ export function pi(
         );
         return;
       }
+      awaitingHuman = true;
       cb.request({
         kind: m.method === "confirm" ? "approval" : "input",
         title: m.title || "Pi needs your decision",
@@ -96,10 +98,17 @@ export function pi(
       void rpc.terminate();
     }
   };
-  void rpc
-    .request("prompt", { message: prompt }, true)
-    .catch((e) => rpc.onError(e));
+  const ready = rpc.request("prompt", { message: prompt }, true);
+  void ready.catch((e) => rpc.onError(e));
   return {
+    send: async (message) => {
+      await ready;
+      if (finished || stopping || awaitingHuman)
+        throw new Error(
+          "The turn ended or is waiting for a human decision. Review the issue before sending again.",
+        );
+      await rpc.request("steer", { message }, true);
+    },
     stop: async () => {
       stopping = true;
       try {
@@ -110,6 +119,7 @@ export function pi(
       }
     },
     respond: (r, answer, approved) => {
+      awaitingHuman = false;
       const n = r.native!;
       rpc.send({
         type: "extension_ui_response",

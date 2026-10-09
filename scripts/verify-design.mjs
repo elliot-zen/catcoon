@@ -42,34 +42,37 @@ try {
   page.on("pageerror", (e) => errors.push(e.message));
   let stopped = false;
   let binding = false;
+  let sessionCase = null;
   await page.route("**/api/issues**", (route) => {
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/stop")) {
       stopped = true;
       return route.fulfill({ json: { ...detail, status: "stopped" } });
     }
-    const d = binding
-      ? { ...detail, status: "ready" }
-      : stopped
-        ? {
-            ...detail,
-            status: "stopped",
-            currentTurnId: null,
-            activities: [
-              {
-                id: "stopped",
-                issueId: detail.id,
-                actor: "Elliot",
-                type: "stop",
-                summary: "Stopped Issue workflow",
-                detail:
-                  "Automatic dispatch is stopped. Checklist and Agent sessions are preserved.",
-                createdAt: detail.createdAt,
-              },
-              ...detail.activities,
-            ],
-          }
-        : detail;
+    const d =
+      sessionCase ||
+      (binding
+        ? { ...detail, status: "ready" }
+        : stopped
+          ? {
+              ...detail,
+              status: "stopped",
+              currentTurnId: null,
+              activities: [
+                {
+                  id: "stopped",
+                  issueId: detail.id,
+                  actor: "Elliot",
+                  type: "stop",
+                  summary: "Stopped Issue workflow",
+                  detail:
+                    "Automatic dispatch is stopped. Checklist and Agent sessions are preserved.",
+                  createdAt: detail.createdAt,
+                },
+                ...detail.activities,
+              ],
+            }
+          : detail);
     return route.fulfill({ json: url.pathname === "/api/issues" ? rows : d });
   });
   await page.goto(base);
@@ -90,7 +93,7 @@ try {
         ".topbar",
         ".detail-layout",
         ".title-row",
-        ".metadata",
+        ".properties-card",
         ".description",
         ".running-card",
         ".activity-heading",
@@ -108,6 +111,53 @@ try {
   assert.equal(geometry[".title-row"].y, 88);
   assert.equal(geometry[".binding-card"].width, 336);
   assert.equal(geometry[".binding-card"].x, 1080);
+  assert.equal(geometry[".properties-card"].x, 1080);
+  assert.ok(geometry[".properties-card"].y < geometry[".binding-card"].y);
+  assert.equal(
+    await page.locator(".detail-main .badge").count(),
+    0,
+    "Issue properties move out of the main column",
+  );
+  const properties = page.getByRole("region", {
+    name: "Issue properties",
+    exact: true,
+  });
+  for (const label of ["Status", "Folder", "Created by", "Created", "Updated"])
+    assert.equal(
+      await properties
+        .locator("dt")
+        .filter({ hasText: new RegExp(`^${label}$`) })
+        .count(),
+      1,
+    );
+  assert.ok(
+    await properties.getByText("Agent platform", { exact: true }).isVisible(),
+  );
+  const statuses = [
+    "waiting_binding",
+    "ready",
+    "routing",
+    "running",
+    "waiting_human",
+    "stopping",
+    "stopped",
+    "done",
+  ];
+  const colors = await page.evaluate((states) => {
+    const badge = document.querySelector(".properties-card .badge");
+    const original = badge.className;
+    const colors = states.map((status) => {
+      badge.className = `badge badge-${status}`;
+      return getComputedStyle(badge).backgroundColor;
+    });
+    badge.className = original;
+    return colors;
+  }, statuses);
+  assert.equal(
+    new Set(colors).size,
+    statuses.length,
+    "Each issue state has a distinct badge color",
+  );
   binding = true;
   await page.reload();
   await page.getByRole("button", { name: "+ Add", exact: true }).click();
@@ -154,10 +204,18 @@ try {
   await page.locator(".breadcrumb").click();
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   await page
-    .locator(".metadata .badge")
+    .locator(".properties-card .badge")
     .filter({ hasText: "Stopped" })
     .waitFor();
   await page.screenshot({ path: "/tmp/catcoon-ui-stopped.png" });
+  await page
+    .getByRole("button", { name: "Codex binding actions", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Edit Codex binding", exact: true })
+    .waitFor();
+  await page.screenshot({ path: "/tmp/catcoon-ui-binding-menu.png" });
+  await page.keyboard.press("Escape");
   assert.equal(await page.locator(".running-card").count(), 0);
   assert.equal(
     await page
@@ -167,9 +225,156 @@ try {
       .count(),
     0,
   );
+  // Exercise the live response lifecycle and final tool/answer ordering.
+  const startedAt = new Date().toISOString();
+  const baseTurn = {
+    ...detail.turns.at(-1),
+    startedAt,
+    input: "Task: 查看一下对应 Issue\n\nExecution mode: Test",
+    output: "",
+    endedAt: null,
+  };
+  const user = {
+    id: 100,
+    turnId: baseTurn.id,
+    kind: "user",
+    text: "查看一下对应 Issue",
+    createdAt: startedAt,
+  };
+  sessionCase = {
+    ...detail,
+    status: "running",
+    currentTurnId: baseTurn.id,
+    turns: [baseTurn],
+    messages: [user],
+  };
+  async function openSessionCase() {
+    await page.goto(base + "/#" + detail.id);
+    await page.reload();
+    await page
+      .getByRole("button", { name: "Codex binding actions", exact: true })
+      .click();
+    await page
+      .getByRole("menuitem", { name: "Open Codex session", exact: true })
+      .click();
+  }
+  await openSessionCase();
+  await page.getByText("Thinking…", { exact: true }).waitFor();
+  assert.equal(
+    await page
+      .locator(".thinking > span")
+      .evaluate((el) => getComputedStyle(el).animationName),
+    "thinking-pulse",
+  );
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  assert.equal(
+    await page
+      .locator(".thinking > span")
+      .evaluate((el) => getComputedStyle(el).animationName),
+    "none",
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.screenshot({ path: "/tmp/catcoon-session-thinking.png" });
+  const toolStart = {
+    id: 101,
+    turnId: baseTurn.id,
+    kind: "tool",
+    text: JSON.stringify({
+      id: "issues",
+      type: "mcpToolCall",
+      tool: "Looked at issues",
+      status: "inProgress",
+    }),
+    createdAt: startedAt,
+  };
+  sessionCase.messages = [user, toolStart];
+  await openSessionCase();
+  const working = page.locator(".turn-heading");
+  await page
+    .getByRole("button", { name: /Working for \d+ s, hide tool activity/ })
+    .waitFor();
+  const before = await working.textContent();
+  await page.waitForFunction(
+    (text) => document.querySelector(".turn-heading").textContent !== text,
+    before,
+  );
+  await page.screenshot({ path: "/tmp/catcoon-session-working.png" });
+  const answer = "Lureplant 目前没有未归档的 issue";
+  const endedAt = new Date(Date.parse(startedAt) + 5000).toISOString();
+  sessionCase = {
+    ...sessionCase,
+    status: "stopped",
+    currentTurnId: null,
+    turns: [{ ...baseTurn, status: "completed", output: answer, endedAt }],
+    messages: [
+      user,
+      toolStart,
+      {
+        ...toolStart,
+        id: 102,
+        text: JSON.stringify({
+          id: "issues",
+          type: "mcpToolCall",
+          status: "completed",
+        }),
+      },
+    ],
+  };
+  await openSessionCase();
+  const collapse = page.getByRole("button", {
+    name: "Worked for 5 s, hide tool activity",
+    exact: true,
+  });
+  await collapse.waitFor();
+  assert.equal(
+    await page.locator(".session-tool").count(),
+    1,
+    "Tool start/end must render as one updated call",
+  );
+  const toolBounds = await page.locator(".tool-trace").boundingBox();
+  const answerBounds = await page
+    .getByText(answer, { exact: true })
+    .boundingBox();
+  assert.ok(
+    toolBounds.y < answerBounds.y,
+    "Tool activity must precede the answer",
+  );
+  const bubble = await page.locator(".task-message").boundingBox();
+  assert.ok(bubble.width < 400, "Short user messages should fit their content");
+  assert.ok(bubble.x + bubble.width > 1200, "User messages align to the right");
+  await page.screenshot({ path: "/tmp/catcoon-session-worked.png" });
+  await collapse.click();
+  assert.equal(await page.locator(".tool-trace").count(), 0);
+  assert.ok(
+    await page.getByText(answer, { exact: true }).isVisible(),
+    "Collapsing tool activity must keep the answer visible",
+  );
+  await page
+    .getByRole("button", {
+      name: "Worked for 5 s, show tool activity",
+      exact: true,
+    })
+    .click();
+  await page.locator(".session-tool summary").click();
+  assert.ok(await page.locator(".session-tool pre").isVisible());
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          window.__copiedAnswer = text;
+        },
+      },
+    });
+  });
+  await page.getByRole("button", { name: "Copy answer", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Answer copied", exact: true })
+    .waitFor();
+  assert.equal(await page.evaluate(() => window.__copiedAnswer), answer);
   assert.deepEqual(errors, []);
   console.log(
-    "Figma layout verification passed for List, Detail, Bind agent, Jev decision, Agent session, and Stopped.",
+    "Layout verification passed for List, Detail, Bind agent, Jev decision, Agent session, and Stopped; Thinking animation, live Working timer, fixed Worked duration, tool/answer order, collapse and copy.",
   );
 } finally {
   await browser?.close();

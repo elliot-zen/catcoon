@@ -9,6 +9,19 @@ const engine = new Orchestrator(
   {
     route: async (d) => {
       if (
+        d.title === "Human answer placement" &&
+        !d.requests.some((r) => r.status === "answered")
+      ) {
+        for (let index = 0; index < 60; index++)
+          store.activity(
+            d.id,
+            "System",
+            "progress",
+            `Previous activity ${index + 1}`,
+          );
+        return { action: "human", detail: "Which workspace should we use?" };
+      }
+      if (
         d.turns.filter((t) => t.status === "completed").length >=
         d.bindings.length
       )
@@ -24,6 +37,9 @@ const engine = new Orchestrator(
   (b, p, cb) => {
     let timer: NodeJS.Timeout;
     const handle = {
+      send: async (message: string) => {
+        cb.message("assistant_delta", `Received: ${message}`);
+      },
       stop: async () => {
         clearTimeout(timer);
         cb.closed();

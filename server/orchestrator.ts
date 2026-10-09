@@ -4,8 +4,13 @@ import { EventEmitter } from "node:events";
 import { Store, uid, now } from "./store.js";
 import { Jev, routeState } from "./jev.js";
 import { codex, codexAnswers } from "./runtime/codex.js";
+import { codexMcpResponse } from "./runtime/codex-mcp.js";
 import { pi } from "./runtime/pi.js";
-import { defaultApprovalLevel } from "./approval.js";
+import {
+  approvalDescriptions,
+  approvalLabels,
+  defaultApprovalLevel,
+} from "./approval.js";
 import type {
   Binding,
   Decision,
@@ -117,11 +122,28 @@ export class Orchestrator extends EventEmitter {
       Partial<Pick<Binding, "approvalLevel">>,
     bindingId?: string,
   ) {
-    const d = this.assertEdit(id);
+    const d = this.require(id);
+    if (!editable.includes(d.status))
+      throw new HttpError(409, "Stop the issue before editing.");
     const cwd = resolve(data.cwd);
     if (!existsSync(cwd) || !statSync(cwd).isDirectory())
       throw new HttpError(400, "Working directory does not exist.");
     const previous = d.bindings.find((b) => b.id === bindingId);
+    if (this.store.pending(id)?.native) {
+      const approvalOnly =
+        d.status === "stopped" &&
+        previous &&
+        previous.name === data.name &&
+        previous.runtime === data.runtime &&
+        previous.role === data.role &&
+        previous.cwd === cwd &&
+        previous.model === data.model;
+      if (!approvalOnly)
+        throw new HttpError(
+          409,
+          "Only the approval level can change while a runtime request is pending. Resolve it before changing other binding settings.",
+        );
+    }
     const approvalLevel =
       data.approvalLevel ??
       (previous?.runtime === data.runtime
@@ -316,9 +338,74 @@ export class Orchestrator extends EventEmitter {
       this.store.status(id, "waiting_human", { currentTurnId: null });
     });
   }
-  dispatch(d: Detail, b: Binding, instruction: string) {
+  async message(
+    id: string,
+    bindingId: string,
+    message: string,
+    expectedTurnId?: string | null,
+  ) {
+    const d = this.require(id);
+    const b = d.bindings.find((binding) => binding.id === bindingId);
+    if (!b) throw new HttpError(404, "Binding not found.");
+    message = message.trim();
+    if (!message || message.length > 20000)
+      throw new HttpError(400, "Enter a message of 1–20000 characters.");
+    if (this.closing) throw new HttpError(409, "The server is shutting down.");
+    if (this.store.pending(id))
+      throw new HttpError(
+        409,
+        "Resolve the human request at the top of the issue before sending a message.",
+      );
+    if (expectedTurnId !== undefined && expectedTurnId !== d.currentTurnId)
+      throw new HttpError(
+        409,
+        "The active turn changed. Review the latest reply before sending again.",
+      );
+    if (d.status === "running") {
+      const turn = d.turns.find((t) => t.id === d.currentTurnId);
+      const active = turn && this.active.get(turn.id);
+      if (!turn || turn.bindingId !== b.id || !active || active.outcome)
+        throw new HttpError(
+          409,
+          "Wait for the current agent to finish, or stop the issue before messaging this agent.",
+        );
+      // Preserve ordering relative to streamed replies, but only mark accepted
+      // messages as sent once the runtime acknowledges them.
+      const messageId = this.store.message(turn.id, "user_pending", message);
+      this.changed();
+      try {
+        await active.handle.send(message);
+      } catch (e) {
+        this.store.db.prepare("DELETE FROM messages WHERE id=?").run(messageId);
+        this.changed();
+        throw new HttpError(409, (e as Error).message);
+      }
+      this.store.update("messages", String(messageId), { kind: "user_steer" });
+      this.store.activity(
+        id,
+        "Human",
+        "message",
+        `Messaged ${b.name}`,
+        message,
+      );
+      this.changed();
+      return;
+    }
+    if (
+      !["ready", "stopped", "done"].includes(d.status) ||
+      d.turns.some((t) => ["running", "waiting_approval"].includes(t.status))
+    )
+      throw new HttpError(
+        409,
+        "Wait for execution to end before sending a message.",
+      );
+    this.dispatch({ ...d, generation: d.generation + 1 }, b, message, true);
+    this.changed();
+  }
+  dispatch(d: Detail, b: Binding, instruction: string, chat = false) {
     const turnId = uid();
-    const prompt = `Issue ${d.id}: ${d.title}\n\nGoal:\n${d.description}\n\nYour role: ${b.role}\n\nTask: ${instruction}\n\nPrevious turns:\n${JSON.stringify(d.turns.map((t) => ({ agent: d.bindings.find((b) => b.id === t.bindingId)?.name || t.bindingId, status: t.status, output: t.output })))}\n\nHuman decisions:\n${JSON.stringify(d.requests.map((r) => ({ question: r.title, detail: r.detail, status: r.status, answer: r.answer })))}\n\nRespect human rejections. Report results and any remaining work accurately. Ask for human approval before any operation that needs authorization.`;
+    const level = b.approvalLevel ?? defaultApprovalLevel(b.runtime);
+    const prompt = `Issue ${d.id}: ${d.title}\n\nGoal:\n${d.description}\n\nYour role: ${b.role}\n\nTask: ${instruction}\n\nExecution mode: ${approvalLabels[level]}. ${approvalDescriptions[b.runtime][level]}\n\nPrevious turns:\n${JSON.stringify(d.turns.map((t) => ({ agent: d.bindings.find((b) => b.id === t.bindingId)?.name || t.bindingId, status: t.status, output: t.output })))}\n\nHuman decisions:\n${JSON.stringify(d.requests.map((r) => ({ question: r.title, detail: r.detail, status: r.status, answer: r.answer })))}\n\nRespect human rejections. Report results and any remaining work accurately. Follow the configured execution mode for tool permissions. Ask for missing information or required external authentication; do not ask again for tool operations already authorized by this mode.`;
     this.store.transaction(() => {
       this.store.insert("turns", {
         id: turnId,
@@ -331,7 +418,20 @@ export class Orchestrator extends EventEmitter {
         startedAt: now(),
         endedAt: null,
       });
-      this.store.status(d.id, "running", { currentTurnId: turnId });
+      if (chat) this.store.message(turnId, "user", instruction);
+      this.store.status(d.id, "running", {
+        currentTurnId: turnId,
+        generation: d.generation,
+        stopReason: null,
+      });
+      if (chat)
+        this.store.activity(
+          d.id,
+          "Human",
+          "message",
+          `Messaged ${b.name}`,
+          instruction,
+        );
       this.store.activity(
         d.id,
         b.name,
@@ -444,7 +544,14 @@ export class Orchestrator extends EventEmitter {
             if (pending?.native)
               this.store.update("requests", pending.id, { native: null });
           } else {
-            this.store.status(d.id, "routing", { currentTurnId: null });
+            this.store.status(
+              d.id,
+              chat ? (d.status === "done" ? "done" : "stopped") : "routing",
+              {
+                currentTurnId: null,
+                stopReason: null,
+              },
+            );
             this.store.activity(
               d.id,
               b.name,
@@ -454,7 +561,7 @@ export class Orchestrator extends EventEmitter {
           }
         });
         this.changed();
-        if (!interrupted && !failed) void this.route(d.id);
+        if (!interrupted && !failed && !chat) void this.route(d.id);
       },
     };
     try {
@@ -485,6 +592,13 @@ export class Orchestrator extends EventEmitter {
     if (r.native?.method === "item/tool/requestUserInput") {
       try {
         codexAnswers(r.native.params.questions, answer);
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+    }
+    if (r.native?.method === "mcpServer/elicitation/request") {
+      try {
+        codexMcpResponse(r.native.params, answer, approved);
       } catch (e) {
         throw new HttpError(400, (e as Error).message);
       }
@@ -538,6 +652,11 @@ export class Orchestrator extends EventEmitter {
     this.changed();
   }
   recover() {
+    // A crash can happen after native acceptance but before its acknowledgement
+    // is saved. Retain the message without claiming delivery or replaying it.
+    this.store.db.exec(
+      "UPDATE messages SET kind='user_unconfirmed' WHERE kind='user_pending'",
+    );
     for (const d of this.store.list()) {
       const workers = this.store.db
         .prepare(

@@ -1,27 +1,60 @@
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import type { Decision, Detail } from "./types.js";
+import type { Decision, Detail, HumanRequest, Turn } from "./types.js";
 const answerSchema = z.object({
   choice: z.string(),
   confidence: z.number().min(0).max(1),
 });
+interface HistoryEntry {
+  status: Turn["status"] | HumanRequest["status"];
+  type: "human" | "agent";
+  agent_id: string | null;
+  agent_name: string;
+  answer: string;
+}
 export function routeState(d: Detail) {
-  return {
-    goal: { title: d.title, description: d.description },
-    agents: d.bindings.map((b) => ({ id: b.id, name: b.name, role: b.role })),
-    results: d.turns.map((t) => ({
-      agent: t.bindingId,
-      status: t.status,
-      result: t.output,
-    })),
-    humanDecisions: d.requests.map((r) => ({
-      kind: r.kind,
-      question: r.title,
-      detail: r.detail,
-      status: r.status,
-      answer: r.answer,
-    })),
-  };
+  const history: HistoryEntry[] = [];
+  const turn = d.turns.at(-1);
+  if (turn) {
+    const agent = d.bindings.find((b) => b.id === turn.bindingId);
+    history.push({
+      status: turn.status,
+      type: "agent",
+      agent_id: turn.bindingId,
+      agent_name: agent?.name ?? turn.bindingId,
+      answer: turn.output,
+    });
+  }
+  const human = d.requests.findLast((r) => r.status !== "pending");
+  if (human) {
+    // Requests are timestamped when asked; the activity records when answered.
+    const activities = d.activities ?? [];
+    const answeredAt =
+      activities.find((a) => a.type === "human_decision")?.createdAt ??
+      human.createdAt;
+    const agentAt = turn?.endedAt ?? turn?.startedAt ?? "";
+    // Activities are newest first; use their order when timestamps are equal.
+    const latestActor = activities.find(
+      (a) => a.type === "human_decision" || a.type === "turn_completed",
+    )?.type;
+    if (
+      !turn ||
+      answeredAt > agentAt ||
+      (answeredAt === agentAt &&
+        (latestActor
+          ? latestActor === "human_decision"
+          : human.turnId !== turn.id))
+    ) {
+      history.push({
+        status: human.status,
+        type: "human",
+        agent_id: null,
+        agent_name: "Human",
+        answer: human.answer ?? "",
+      });
+    }
+  }
+  return { goal: { title: d.title, description: d.description }, history };
 }
 export class Jev {
   constructor(
@@ -30,7 +63,7 @@ export class Jev {
       "https://api.typesafe.ai/v1/systemone",
   ) {}
   async choose(
-    state: unknown,
+    state: ReturnType<typeof routeState>,
     instructions: string,
     criteria: Record<string, string>,
     signal: AbortSignal,
@@ -58,7 +91,7 @@ export class Jev {
     };
     const payload = {
       model: process.env.JEV_MODEL || "jev-latest",
-      state: JSON.stringify(state),
+      state,
       questions: { decision: { type: "choice", instructions, criteria } },
     };
     log("request", { method: "POST", url: this.endpoint, body: payload });
@@ -130,7 +163,7 @@ export class Jev {
       };
     const next = await this.choose(
       state,
-      "Choose the next step for this issue. A completed agent turn is not proof that the whole goal is met. Respect human rejections and all binding responsibilities. Choose a bound agent ID directly when its role matches unfinished work; consider previous results and human feedback and do not repeat completed work. Choose done only when results demonstrate the entire goal is satisfied; choose human when a user decision or clarification is necessary.",
+      "Choose the next step using goal and history. History contains only the latest agent turn, followed by the latest human answer if the human acted afterward. The bound agents and their responsibilities are listed in criteria. Respect human rejections and follow the latest human answer. Choose a bound agent ID when its role matches unfinished work; do not repeat completed work. A completed agent turn alone does not prove the whole goal is met. Choose done only when the available evidence demonstrates the entire goal is satisfied, including required review; choose human when a user decision or clarification is necessary.",
       {
         ...Object.fromEntries(
           d.bindings.map((b) => [b.id, `${b.name}: ${b.role}`]),

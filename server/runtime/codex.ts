@@ -1,6 +1,7 @@
 import type { Binding, RuntimeCallbacks, RuntimeHandle } from "../types.js";
 import { JsonProcess } from "./process.js";
 import { codexApprovalSettings, defaultApprovalLevel } from "../approval.js";
+import { codexMcpResponse, mcpElicitationKind } from "./codex-mcp.js";
 export function codexAnswers(questions: { id: string }[], answer: string) {
   let values: Record<string, string[]>;
   try {
@@ -39,7 +40,8 @@ export function codex(
   let threadId = "",
     turnId = "",
     finished = false,
-    stopping = false;
+    stopping = false,
+    awaitingHuman = false;
   let output = "";
   const proposedItems = new Map<string, unknown>();
   if (rpc.child.pid) cb.spawned(rpc.child.pid);
@@ -60,6 +62,15 @@ export function codex(
   rpc.onMessage = (m) => {
     if (m.method === "item/started") {
       proposedItems.set(m.params.item.id, m.params.item);
+      if (
+        ["commandExecution", "fileChange", "mcpToolCall"].includes(
+          m.params.item.type,
+        )
+      )
+        cb.message(
+          "tool",
+          JSON.stringify({ ...m.params.item, status: "inProgress" }, null, 2),
+        );
     }
     if (m.method === "turn/started") turnId = m.params.turn.id;
     if (m.method === "item/agentMessage/delta") {
@@ -67,7 +78,7 @@ export function codex(
       cb.message("assistant_delta", m.params.delta);
     } else if (m.method === "item/completed") {
       const item = m.params.item;
-      if (item.type === "commandExecution" || item.type === "fileChange")
+      if (["commandExecution", "fileChange", "mcpToolCall"].includes(item.type))
         cb.message("tool", JSON.stringify(item, null, 2));
     }
     if (m.id !== undefined && m.method) {
@@ -78,7 +89,8 @@ export function codex(
           "item/fileChange/requestApproval",
           "item/permissions/requestApproval",
         ].includes(m.method)
-      )
+      ) {
+        awaitingHuman = true;
         cb.request({
           kind: "approval",
           title: m.params.reason || "Approve proposed operation",
@@ -90,7 +102,8 @@ export function codex(
           options: [],
           native,
         });
-      else if (m.method === "item/tool/requestUserInput")
+      } else if (m.method === "item/tool/requestUserInput") {
+        awaitingHuman = true;
         cb.request({
           kind: "input",
           title: "Codex needs your decision",
@@ -98,7 +111,38 @@ export function codex(
           options: [],
           native,
         });
-      else {
+      } else if (m.method === "mcpServer/elicitation/request") {
+        const kind = mcpElicitationKind(m.params);
+        if (!kind) {
+          rpc.send({ id: m.id, result: { action: "cancel", content: null } });
+          cb.message(
+            "tool",
+            `MCP request cancelled: unsupported elicitation mode ${m.params.mode}. Complete verification in the tool's own interface.`,
+          );
+        } else if (
+          kind === "approval" &&
+          m.params.mode !== "url" &&
+          binding.approvalLevel === "automatic"
+        ) {
+          rpc.send({ id: m.id, result: codexMcpResponse(m.params, "", true) });
+          cb.message(
+            "tool",
+            `MCP permission automatically approved for ${m.params.serverName}: ${m.params.message}`,
+          );
+        } else {
+          awaitingHuman = true;
+          cb.request({
+            kind,
+            title:
+              m.params.mode === "url"
+                ? "Complete MCP verification, then approve"
+                : m.params.message || "MCP needs your decision",
+            detail: JSON.stringify(m.params, null, 2),
+            options: [],
+            native,
+          });
+        }
+      } else {
         rpc.send({
           id: m.id,
           error: {
@@ -119,10 +163,13 @@ export function codex(
       void rpc.terminate();
     }
   };
-  void (async () => {
+  const ready = (async () => {
     await rpc.request("initialize", {
       clientInfo: { name: "catcoon", title: "Catcoon", version: "0.1.0" },
-      capabilities: { experimentalApi: true },
+      capabilities: {
+        experimentalApi: true,
+        mcpServerOpenaiFormElicitation: true,
+      },
     });
     rpc.send({ method: "initialized", params: {} });
     if (stopping) return;
@@ -148,8 +195,21 @@ export function codex(
       input: [{ type: "text", text: prompt, text_elements: [] }],
     });
     turnId = result.turn.id;
-  })().catch((e) => rpc.onError(e));
+  })();
+  void ready.catch((e) => rpc.onError(e));
   return {
+    send: async (message) => {
+      await ready;
+      if (finished || stopping || awaitingHuman)
+        throw new Error(
+          "The turn ended or is waiting for a human decision. Review the issue before sending again.",
+        );
+      await rpc.request("turn/steer", {
+        threadId,
+        expectedTurnId: turnId,
+        input: [{ type: "text", text: message, text_elements: [] }],
+      });
+    },
     stop: async () => {
       stopping = true;
       try {
@@ -160,6 +220,7 @@ export function codex(
       }
     },
     respond: (r, answer, approved) => {
+      awaitingHuman = false;
       const n = r.native!;
       let result: any;
       if (n.method === "item/permissions/requestApproval")
@@ -171,7 +232,9 @@ export function codex(
         result = {
           answers: codexAnswers(n.params.questions || [], answer),
         };
-      } else result = { decision: approved ? "accept" : "decline" };
+      } else if (n.method === "mcpServer/elicitation/request")
+        result = codexMcpResponse(n.params, answer, approved);
+      else result = { decision: approved ? "accept" : "decline" };
       rpc.send({ id: n.id, result });
     },
     dispose: () => {

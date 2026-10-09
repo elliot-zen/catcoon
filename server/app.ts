@@ -96,6 +96,13 @@ export function createApp(engine: Orchestrator) {
   app.post("/api/issues/:id/start", (req, res) =>
     res.json(engine.start(req.params.id)),
   );
+  app.post("/api/issues/:id/bindings/:binding/messages", async (req, res) => {
+    const { message, turnId } = z
+      .object({ message: text, turnId: z.string().nullable() })
+      .parse(req.body);
+    await engine.message(req.params.id, req.params.binding, message, turnId);
+    res.status(201).json(engine.require(req.params.id));
+  });
   app.post("/api/issues/:id/stop", (req, res) =>
     res.json(engine.stop(req.params.id)),
   );
