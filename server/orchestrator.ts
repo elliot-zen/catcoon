@@ -1,5 +1,11 @@
-import { existsSync, statSync, mkdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  accessSync,
+  constants,
+  statSync,
+  mkdirSync,
+  readFileSync,
+} from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import { Store, uid, now } from "./store.js";
 import { Jev, routeState } from "./jev.js";
@@ -24,6 +30,7 @@ export class HttpError extends Error {
   constructor(
     public status: number,
     message: string,
+    public field?: string,
   ) {
     super(message);
   }
@@ -125,10 +132,51 @@ export class Orchestrator extends EventEmitter {
     const d = this.require(id);
     if (!editable.includes(d.status))
       throw new HttpError(409, "Stop the issue before editing.");
-    const cwd = resolve(data.cwd);
-    if (!existsSync(cwd) || !statSync(cwd).isDirectory())
-      throw new HttpError(400, "Working directory does not exist.");
     const previous = d.bindings.find((b) => b.id === bindingId);
+    if (bindingId && !previous) throw new HttpError(404, "Binding not found.");
+    const path = data.cwd.trim();
+    if (!path)
+      throw new HttpError(400, "Working directory is required.", "cwd");
+    if (!isAbsolute(path) || path.includes("\0"))
+      throw new HttpError(
+        400,
+        "Enter an absolute path on the agent’s machine.",
+        "cwd",
+      );
+    const cwd = resolve(path);
+    const directoryLocked =
+      !!previous &&
+      (!!previous.sessionId ||
+        d.turns.some((t) => t.bindingId === previous.id));
+    if (directoryLocked && cwd !== previous.cwd)
+      throw new HttpError(
+        409,
+        "This session uses the saved directory. Bind a new agent to choose another directory.",
+        "cwd",
+      );
+    // A locked directory belongs to the existing session. Role and approval edits
+    // can still be saved if that directory has since become unavailable.
+    if (!directoryLocked) {
+      try {
+        if (!statSync(cwd).isDirectory())
+          throw new HttpError(
+            400,
+            "This path is a file. Enter a directory.",
+            "cwd",
+          );
+        accessSync(cwd, constants.R_OK | constants.X_OK);
+      } catch (error) {
+        if (error instanceof HttpError) throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        throw new HttpError(
+          400,
+          code === "ENOENT" || code === "ENOTDIR"
+            ? "Directory not found. Enter an existing directory."
+            : "The agent cannot access this directory.",
+          "cwd",
+        );
+      }
+    }
     if (this.store.pending(id)?.native) {
       const approvalOnly =
         d.status === "stopped" &&
@@ -175,7 +223,7 @@ export class Orchestrator extends EventEmitter {
         "Human",
         "binding",
         `${bindingId ? "Updated" : "Bound"} ${data.name}`,
-        `${data.role}\nApproval level: ${approvalLevel}`,
+        `${data.role}\nWorking directory: ${cwd}\nApproval level: ${approvalLevel}`,
       );
     });
     this.changed();

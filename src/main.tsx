@@ -23,6 +23,7 @@ import { sessionTools } from "./session-tools";
 type Row = Issue & { bindings: Binding[]; runningAgent: string | null };
 type Config = {
   workspace: string;
+  pathStyle: "posix" | "windows";
   jevConfigured: boolean;
   runtimeAvailable: Record<string, boolean>;
 };
@@ -38,6 +39,14 @@ const labels: Record<Status, string> = {
 };
 const editable = (s: Status) =>
   ["waiting_binding", "ready", "stopped"].includes(s);
+class ApiError extends Error {
+  constructor(
+    message: string,
+    public field?: string,
+  ) {
+    super(message);
+  }
+}
 async function api<T>(
   path: string,
   method = "GET",
@@ -49,7 +58,8 @@ async function api<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const result = await res.json();
-  if (!res.ok) throw new Error(result.error || "Request failed.");
+  if (!res.ok)
+    throw new ApiError(result.error || "Request failed.", result.field);
   return result;
 }
 function Icon({ name }: { name: string }) {
@@ -117,7 +127,10 @@ function Dialog({
     <dialog
       ref={ref}
       className={`dialog ${decision ? "decision-dialog" : ""}`}
-      onCancel={close}
+      onCancel={(e) => {
+        e.preventDefault();
+        close();
+      }}
       onClick={(e) => {
         if (e.target === ref.current) close();
       }}
@@ -150,6 +163,7 @@ function App() {
     [page, setPage] = useState(0),
     [modal, setModal] = useState<"create" | "edit" | "binding" | null>(null),
     [editingBinding, setEditingBinding] = useState<Binding | null>(null),
+    [directoryError, setDirectoryError] = useState(""),
     [session, setSession] = useState<string | null>(null),
     [inspect, setInspect] = useState<Activity | null>(null),
     [activityFilter, setActivityFilter] = useState("all"),
@@ -205,12 +219,15 @@ function App() {
     if (busy) return;
     setBusy(true);
     setError("");
+    setDirectoryError("");
     try {
       await fn();
       if (close) setModal(null);
       await refresh();
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof ApiError && e.field === "cwd")
+        setDirectoryError(e.message);
+      else setError((e as Error).message);
     } finally {
       setBusy(false);
     }
@@ -222,6 +239,7 @@ function App() {
   }
   function openBinding(b: Binding | null = null) {
     setError("");
+    setDirectoryError("");
     setEditingBinding(b);
     setModal("binding");
   }
@@ -692,6 +710,9 @@ function App() {
                             )}
                           </div>
                           <p>{b.role}</p>
+                          <p className="binding-directory" title={b.cwd}>
+                            {b.cwd}
+                          </p>
                         </button>
                         <div className="binding-settings">
                           <span>
@@ -751,13 +772,26 @@ function App() {
         </Dialog>
       )}
       {modal === "binding" && detail && (
-        <Dialog title="Bind agent" close={() => setModal(null)} error={error}>
+        <Dialog
+          title={editingBinding ? "Edit binding" : "Bind agent"}
+          close={() => {
+            if (!busy) setModal(null);
+          }}
+          error={error}
+        >
           <BindingForm
             initial={editingBinding}
             config={config}
             busy={busy}
             canEdit={editable(detail.status)}
             approvalOnly={!!pending?.native}
+            directoryLocked={
+              !!editingBinding &&
+              (!!editingBinding.sessionId ||
+                detail.turns.some((t) => t.bindingId === editingBinding.id))
+            }
+            directoryError={directoryError}
+            clearDirectoryError={() => setDirectoryError("")}
             close={() => setModal(null)}
             submit={(data) =>
               perform(
@@ -957,6 +991,9 @@ function BindingForm({
   busy,
   canEdit,
   approvalOnly = false,
+  directoryLocked,
+  directoryError,
+  clearDirectoryError,
   close,
   submit,
 }: {
@@ -965,26 +1002,54 @@ function BindingForm({
   busy: boolean;
   canEdit: boolean;
   approvalOnly?: boolean;
+  directoryLocked: boolean;
+  directoryError: string;
+  clearDirectoryError: () => void;
   close: () => void;
   submit: (data: unknown) => void;
 }) {
   const [runtime, setRuntime] = useState(initial?.runtime || "codex"),
     [role, setRole] = useState(initial?.role || ""),
+    [cwd, setCwd] = useState(initial?.cwd ?? config?.workspace ?? ""),
     [approvalLevel, setApprovalLevel] = useState<ApprovalLevel>(
       initial?.approvalLevel ??
         defaultApprovalLevel(initial?.runtime || "codex"),
     );
+  const directoryTouched = useRef(false);
+  useEffect(() => {
+    if (!initial && !directoryTouched.current && config)
+      setCwd(config.workspace || "");
+  }, [config, initial]);
+  const path = cwd.trim();
+  const absolute =
+    config?.pathStyle === "windows"
+      ? /^(?:[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/i.test(path)
+      : path.startsWith("/");
+  const localDirectoryError = !path
+    ? "Working directory is required."
+    : !absolute || path.includes("\0")
+      ? "Enter an absolute path on the agent’s machine."
+      : "";
+  const fieldError = directoryError || localDirectoryError;
   return (
     <>
       <p className="dialog-description">
         {approvalOnly
           ? "Update the approval level for future turns. The suspended turn keeps its current policy and pending request."
-          : "Configure an agent’s responsibility and approval level for this Issue."}
+          : "Set this agent’s responsibility, working directory, and approval level."}
       </p>
       <form
         className="dialog-form"
         onSubmit={(e) => {
           e.preventDefault();
+          if (
+            busy ||
+            !canEdit ||
+            localDirectoryError ||
+            !role.trim() ||
+            !config
+          )
+            return;
           submit({
             runtime,
             approvalLevel,
@@ -995,7 +1060,7 @@ function BindingForm({
                 : runtime === "codex"
                   ? "Codex"
                   : "Pi",
-            cwd: initial?.cwd || config?.workspace || "",
+            cwd: path,
             model: initial?.model || "",
           });
         }}
@@ -1033,6 +1098,44 @@ function BindingForm({
             onChange={(e) => setRole(e.target.value)}
           />
         </label>
+        <div className="directory-field">
+          <label htmlFor="binding-directory">Working directory *</label>
+          <input
+            id="binding-directory"
+            required
+            value={cwd}
+            placeholder={
+              config?.pathStyle === "windows"
+                ? "C:\\projects\\my-project"
+                : "/path/to/project"
+            }
+            readOnly={directoryLocked || approvalOnly}
+            disabled={!canEdit || busy}
+            aria-invalid={!!fieldError}
+            aria-describedby={`directory-help${fieldError ? " directory-error" : ""}`}
+            onChange={(e) => {
+              directoryTouched.current = true;
+              setCwd(e.target.value);
+              clearDirectoryError();
+            }}
+          />
+          <p id="directory-help">
+            {directoryLocked ? (
+              "This session uses the saved directory. Bind a new agent to choose another directory."
+            ) : (
+              <>
+                Enter an existing absolute path on the agent’s machine.
+                <br />
+                Prefilled with the project directory. Saved for this agent only.
+              </>
+            )}
+          </p>
+          {fieldError && (
+            <p id="directory-error" role="alert" className="directory-error">
+              {fieldError}
+            </p>
+          )}
+        </div>
         <div className="approval-field">
           <label>
             Approval level
@@ -1068,14 +1171,26 @@ function BindingForm({
           </p>
         </div>
         <div className="dialog-actions">
-          <button type="button" onClick={close}>
+          <button type="button" onClick={close} disabled={busy}>
             Cancel
           </button>
           <button
             className="primary"
-            disabled={busy || !canEdit || !role.trim() || !config}
+            disabled={
+              busy ||
+              !canEdit ||
+              !role.trim() ||
+              !config ||
+              !!localDirectoryError
+            }
           >
-            {initial ? "Save binding" : "Bind agent"}
+            {busy
+              ? initial
+                ? "Saving…"
+                : "Binding…"
+              : initial
+                ? "Save binding"
+                : "Bind agent"}
           </button>
         </div>
       </form>

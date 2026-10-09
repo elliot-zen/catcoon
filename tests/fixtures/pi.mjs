@@ -19,6 +19,7 @@ process.stdin.on("data", (c) => {
       emit({
         type: "tool_execution_start",
         approvalLevel: process.env.CATCOON_APPROVAL_LEVEL,
+        processCwd: process.cwd(),
       });
       if (m.message === "Chat prompt") {
         // Keep streaming until a steer arrives.

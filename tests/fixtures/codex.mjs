@@ -26,7 +26,13 @@ process.stdin.on("data", (c) => {
       sandbox = m.params.sandbox;
       emit({
         method: "item/completed",
-        params: { item: { type: "commandExecution", configuration: m.params } },
+        params: {
+          item: {
+            type: "commandExecution",
+            configuration: m.params,
+            processCwd: process.cwd(),
+          },
+        },
       });
       emit({ id: m.id, result: { thread: { id: "test-thread" } } });
     } else if (m.method === "turn/start") {

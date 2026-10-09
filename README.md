@@ -31,7 +31,7 @@ npm start
 ## 使用
 
 1. New issue：填写标题和描述，明确目标与完成标准。
-2. 点击 Binding agents 中的 + Add，选择 Codex 或 Pi，填写该 Issue 中的 Agent description。工作目录由 `AGENT_WORKSPACE` 配置，必须已存在。
+2. 点击 Binding agents 中的 + Add，选择 Codex 或 Pi，填写该 Issue 中的 Agent description 和 Working directory。目录默认预填 `AGENT_WORKSPACE`（未配置时为服务启动目录），每个 Agent 可独立修改；必须是 Agent 运行机器上已存在、可读取和进入的绝对路径。保存失败时保留表单，并在目录字段下提示原因。绑定保存不会启动 Agent。
 3. 可再绑定另一位 Agent，例如 Codex 实现、Pi 审查。
 4. Start：Jev 读取目标、职责、历史结果，选择 Agent 执行。
 5. Needs attention：查看具体请求，Approve、Reject 并填写反馈，或回答问题。
@@ -54,19 +54,19 @@ npm start
 - Stop 不撤销已经产生的文件或外部效果；等待人工时 Stop 会保留挂起会话和审批，再次 Start 后才能处理。
 - 重启后关闭自动推进，并核对、终止上次遗留的 runtime 进程。Linux 使用 PID 与 `/proc` 进程创建时间避免误认复用的 PID；确认结束后才能重新 Start。
 - 重启会失去原生 RPC 连接，但保留人工请求内容。重新 Start 后先处理该请求，再带历史上下文规划新的 turn；新的工具操作仍需经过 runtime 自己的审批，不自动重放旧操作。
-- 有执行历史的 Binding 保留用于追溯，第一版不能删除，可以在停止后编辑职责。未决原生请求存在时可修改未来轮次的审批级别，目标和其他绑定字段仍需先处理该请求。
+- 有执行历史的 Binding 保留用于追溯，第一版不能删除，可以在停止后编辑职责和审批级别。工作目录在首次执行前可修改；已有会话或执行历史后只读，需要新绑定来选择另一目录。未决原生请求存在时仅允许在停止状态下修改未来轮次的审批级别，目标和其他绑定字段仍需先处理该请求。
 
 ## 技术结构
 
-| 部分 | 实现 |
-| --- | --- |
-| 前端 | React 19、TypeScript、Vite、CSS，Figma 本地图标及 Geist 字体 |
-| API | Express 5，本机 HTTP 与 SSE 实时更新 |
-| 存储 | Node 内置 `node:sqlite`，WAL、事务、单执行 / 单未决请求唯一索引 |
-| 调度 | 显式状态机、运行代次校验、runtime 生命周期管理 |
-| Codex | `codex app-server --stdio` JSON RPC，thread 恢复、审批响应、turn 中断 |
-| Pi | `pi --mode rpc`，独立持久会话、自定义审批扩展，等待 `agent_settled` 才结束 |
-| Jev | TypeSafe System One HTTP API，原子 Choice 问题及置信度校验 |
+| 部分  | 实现                                                                       |
+| ----- | -------------------------------------------------------------------------- |
+| 前端  | React 19、TypeScript、Vite、CSS，Figma 本地图标及 Geist 字体               |
+| API   | Express 5，本机 HTTP 与 SSE 实时更新                                       |
+| 存储  | Node 内置 `node:sqlite`，WAL、事务、单执行 / 单未决请求唯一索引            |
+| 调度  | 显式状态机、运行代次校验、runtime 生命周期管理                             |
+| Codex | `codex app-server --stdio` JSON RPC，thread 恢复、审批响应、turn 中断      |
+| Pi    | `pi --mode rpc`，独立持久会话、自定义审批扩展，等待 `agent_settled` 才结束 |
+| Jev   | TypeSafe System One HTTP API，原子 Choice 问题及置信度校验                 |
 
 主要代码：
 
@@ -83,11 +83,11 @@ Session 支持文字聊天，Enter 发送，Shift+Enter 换行。空闲时沿用
 
 会话中的用户消息靠右并按内容宽度显示。Agent 等待输出时显示轻微闪烁的 Thinking…，开始输出或调用工具后显示每秒更新的 Working for … s，结束后显示固定的 Worked for … s。工具过程在正文上方，点击耗时行可折叠，工具开始与结束事件合并显示，已完成回复支持复制。Issue 详情右侧的 Properties 卡片显示状态、文件夹、创建人和时间信息；不同状态使用不同颜色，列表和会话页同步使用相同状态配色。
 
-| 级别 | Codex | Pi |
-| --- | --- | --- |
-| Strict approval / 严格审批 | `read-only` + `on-request`，需要额外权限的操作（包括文件修改）请求人工审批 | 每次 shell、写入、编辑和其他非只读工具调用请求人工审批 |
+| 级别                           | Codex                                                                                     | Pi                                                                                                                    |
+| ------------------------------ | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Strict approval / 严格审批     | `read-only` + `on-request`，需要额外权限的操作（包括文件修改）请求人工审批                | 每次 shell、写入、编辑和其他非只读工具调用请求人工审批                                                                |
 | On-request approval / 按需审批 | `workspace-write` + `on-request`，工作区内常规操作直接执行，额外权限由 Codex 发起人工审批 | 工作区内 write/edit 和简单只读命令 `pwd/ls/cat/head/tail/wc` 直接执行，其他 shell、工作区外写入及未知工具请求人工审批 |
-| Fully automatic / 完全自动 | `danger-full-access` + `never`，关闭 Codex 沙箱，已启用工具直接执行，不经人工或自动评审 | 无工具审批，沿用 Pi 进程的系统权限，不经自动评审 |
+| Fully automatic / 完全自动     | `danger-full-access` + `never`，关闭 Codex 沙箱，已启用工具直接执行，不经人工或自动评审   | 无工具审批，沿用 Pi 进程的系统权限，不经自动评审                                                                      |
 
 Codex 的前两档使用 `approvalsReviewer: user`；完全自动不会启用 `auto_review`。`never` 只表示禁止弹出审批，必须搭配 `danger-full-access` 才对应本项目的完全自动。宿主环境、组织策略、工具禁用状态及服务端权限仍有效。旧版本已保存的 Codex Automatic 在首次升级时迁移为按需审批，并记录活动；需要完全自动时请显式重新选择，以免升级静默扩大权限。Pi 已有自动档行为不变。更早版本没有审批字段的绑定仍迁移为 Codex 按需、Pi 严格。
 
@@ -97,17 +97,17 @@ Pi 显式加载 Catcoon 审批扩展，关闭自动发现的扩展。只读工�
 
 ## 配置与数据
 
-| 环境变量 | 默认值 / 用途 |
-| --- | --- |
-| `TYPESAFE_API_KEY` | 必填；缺失时可创建和绑定，Start 路由会停止并显示原因 |
-| `JEV_MODEL` | `jev-latest` |
-| `JEV_URL` | `https://api.typesafe.ai/v1/systemone` |
-| `JEV_MIN_CONFIDENCE` | `0.65`；判断不足时请求 Human 决策 |
-| `MAX_TURNS` | `20`；达到上限时请求 Human；人工补充后重新计数 |
-| `PORT` | `3000` |
-| `DATA_DIR` | `.data` |
-| `AGENT_WORKSPACE` | 当前项目目录；新绑定 Agent 的工作目录 |
-| `CODEX_BIN` / `PI_BIN` | `codex` / `pi`；可以指定可执行文件绝对路径 |
+| 环境变量               | 默认值 / 用途                                        |
+| ---------------------- | ---------------------------------------------------- |
+| `TYPESAFE_API_KEY`     | 必填；缺失时可创建和绑定，Start 路由会停止并显示原因 |
+| `JEV_MODEL`            | `jev-latest`                                         |
+| `JEV_URL`              | `https://api.typesafe.ai/v1/systemone`               |
+| `JEV_MIN_CONFIDENCE`   | `0.65`；判断不足时请求 Human 决策                    |
+| `MAX_TURNS`            | `20`；达到上限时请求 Human；人工补充后重新计数       |
+| `PORT`                 | `3000`                                               |
+| `DATA_DIR`             | `.data`                                              |
+| `AGENT_WORKSPACE`      | 当前项目目录；新绑定 Agent 的工作目录                |
+| `CODEX_BIN` / `PI_BIN` | `codex` / `pi`；可以指定可执行文件绝对路径           |
 
 数据库为 `.data/catcoon.sqlite`，Pi 会话为 `.data/sessions/`。Codex thread 由 Codex 自己保存，数据库记录其 ID。不要同时启动两个使用相同 `DATA_DIR` 的服务；服务锁会阻止重复启动。
 

@@ -1,10 +1,16 @@
-import { chromium } from "@playwright/test";
+import { chromium, expect } from "@playwright/test";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 const temp = await mkdtemp(join(tmpdir(), "catcoon-browser-"));
+const project = join(temp, "project");
+const alternate = join(temp, "a-long-project-directory-" + "x".repeat(100));
+const file = join(temp, "file.txt");
+await mkdir(project);
+await mkdir(alternate);
+await writeFile(file, "file");
 const port = 3137;
 const base = `http://localhost:${port}`;
 const server = spawn(
@@ -16,6 +22,7 @@ const server = spawn(
       PORT: String(port),
       TEST_DB: join(temp, "test.sqlite"),
       TYPESAFE_API_KEY: "test",
+      AGENT_WORKSPACE: project,
     },
     stdio: ["ignore", "pipe", "pipe"],
   },
@@ -68,7 +75,67 @@ try {
   await page
     .getByLabel("Agent description", { exact: true })
     .fill("Write the backend logic and verify the API.");
+  const directory = page.getByLabel("Working directory *", { exact: true });
+  await expect(directory).toHaveValue(project);
+  for (const [value, message] of [
+    ["  ", "Working directory is required."],
+    ["relative/path", "Enter an absolute path on the agent’s machine."],
+  ]) {
+    await directory.fill(value);
+    await expect(page.getByRole("alert")).toHaveText(message);
+    await expect(
+      page.getByRole("button", { name: "Bind agent", exact: true }),
+    ).toBeDisabled();
+  }
+  for (const [value, message] of [
+    [
+      join(temp, "missing"),
+      "Directory not found. Enter an existing directory.",
+    ],
+    [file, "This path is a file. Enter a directory."],
+  ]) {
+    await directory.fill(value);
+    await page.getByRole("button", { name: "Bind agent", exact: true }).click();
+    await expect(page.locator("#directory-error")).toHaveText(message);
+    await expect(directory).toHaveValue(value);
+    await expect(
+      page.getByLabel("Agent description", { exact: true }),
+    ).toHaveValue("Write the backend logic and verify the API.");
+    if (value === join(temp, "missing"))
+      await page.screenshot({
+        path: "/tmp/catcoon-directory-error.png",
+        fullPage: true,
+      });
+  }
+  await directory.fill(alternate);
+  await page.getByLabel("Agent runtime").selectOption("pi");
+  await expect(directory).toHaveValue(alternate);
+  await page.getByLabel("Agent runtime").selectOption("codex");
+  await page.route("**/bindings", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await route.continue();
+  });
   await page.getByRole("button", { name: "Bind agent", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Binding…", exact: true }),
+  ).toBeDisabled();
+  await expect(directory).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.unroute("**/bindings");
+  await expect(page.locator(".binding-directory")).toHaveText(alternate);
+  await bindingAction("Codex", "Edit Codex binding");
+  await expect(directory).toHaveValue(alternate);
+  await directory.fill(project);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator(".binding-directory")).toHaveText(alternate);
+  await bindingAction("Codex", "Edit Codex binding");
+  await directory.fill(project);
+  await page.getByRole("button", { name: "Save binding", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator(".binding-directory")).toHaveText(project);
   await page.getByRole("button", { name: "+ Add", exact: true }).click();
   await page.getByLabel("Agent runtime").selectOption("pi");
   assert.equal(
@@ -81,12 +148,45 @@ try {
   await page
     .getByLabel("Agent description")
     .fill("Review the implementation and verify the complete happy path.");
+  await expect(directory).toHaveValue(project);
+  await directory.fill(alternate);
+  await page.setViewportSize({ width: 390, height: 520 });
+  assert.ok(
+    await page.evaluate(() => {
+      const dialog = document.querySelector("dialog");
+      const box = dialog.getBoundingClientRect();
+      return (
+        box.x >= 16 &&
+        box.right <= innerWidth - 16 &&
+        box.y >= 16 &&
+        box.bottom <= innerHeight - 16
+      );
+    }),
+    "Binding dialog must remain within the mobile viewport",
+  );
+  await page
+    .getByRole("button", { name: "Bind agent", exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: "/tmp/catcoon-directory-mobile.png",
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 960 });
   await page.getByRole("button", { name: "Bind agent", exact: true }).click();
+  await expect(page.locator(".binding-directory")).toHaveText([
+    project,
+    alternate,
+  ]);
+  await page.screenshot({
+    path: "/tmp/catcoon-directory-card.png",
+    fullPage: true,
+  });
   await bindingAction("Pi", "Edit Pi binding");
   assert.equal(
     await page.getByLabel("Approval level", { exact: true }).inputValue(),
     "on-request",
   );
+  await expect(directory).toHaveValue(alternate);
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page
     .getByRole("button", { name: "Pi binding actions", exact: true })
@@ -324,6 +424,11 @@ try {
     await page.getByLabel("Approval level", { exact: true }).inputValue(),
     "automatic",
   );
+  await expect(directory).toHaveAttribute("readonly", "");
+  await expect(directory).toHaveValue(project);
+  await expect(page.locator("#directory-help")).toHaveText(
+    "This session uses the saved directory. Bind a new agent to choose another directory.",
+  );
   await page
     .getByLabel("Approval level", { exact: true })
     .selectOption("strict");
@@ -465,7 +570,7 @@ try {
   assert.equal(await humanRequest.count(), 0);
   assert.deepEqual(errors, []);
   console.log(
-    "Browser happy path passed: workflow and approvals, binding policies, session chat/steering and history persistence, failed-send draft retention, IME/multiline input, Human approval/answers above activity regardless of filtering, search and mobile layout.",
+    "Browser happy path passed: workflow and approvals, binding policies and menus, independent directories and validation, locked sessions, session chat/steering and persistence, failed-submit draft retention, IME/multiline input, Human requests above activity, search and mobile layout.",
   );
 } finally {
   await browser?.close();
