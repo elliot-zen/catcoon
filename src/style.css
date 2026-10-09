@@ -675,14 +675,26 @@ tbody tr:hover {
 .binding-settings button {
   font-size: 12px;
 }
-.approval-field {
+.approval-field,
+.directory-field {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.approval-field p {
+.approval-field p,
+.directory-field p {
   font-size: 12px;
   line-height: 20px;
+  color: var(--muted);
+}
+.directory-field input[aria-invalid="true"] {
+  border-color: #dc2626;
+}
+.directory-field .directory-error {
+  color: #dc2626;
+}
+.directory-field input[readonly] {
+  background: var(--soft);
   color: var(--muted);
 }
 .agent-binding > div {

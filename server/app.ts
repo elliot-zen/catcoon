@@ -1,7 +1,6 @@
 import express from "express";
 import { z } from "zod";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
 import { HttpError, Orchestrator } from "./orchestrator.js";
 import { approvalLevels } from "./approval.js";
 const text = z.string().trim().min(1).max(20000);
@@ -11,7 +10,7 @@ const bindingSchema = z.object({
   runtime: z.enum(["codex", "pi"]),
   approvalLevel: z.enum(approvalLevels).optional(),
   role: text,
-  cwd: text,
+  cwd: z.string().trim().max(20000),
   model: z.string().trim().max(200).default(""),
 });
 export function createApp(engine: Orchestrator) {
@@ -36,6 +35,7 @@ export function createApp(engine: Orchestrator) {
   app.get("/api/config", (_req, res) =>
     res.json({
       workspace: process.env.AGENT_WORKSPACE || process.cwd(),
+      pathStyle: process.platform === "win32" ? "windows" : "posix",
       jevConfigured: !!process.env.TYPESAFE_API_KEY,
       runtimes: ["codex", "pi"],
       runtimeAvailable: Object.fromEntries(
@@ -148,9 +148,12 @@ export function createApp(engine: Orchestrator) {
           error: err.issues
             .map((i) => `${i.path.join(".")}: ${i.message}`)
             .join("; "),
+          field: err.issues.find((i) => i.path[0] === "cwd")
+            ? "cwd"
+            : undefined,
         });
       else if (err instanceof HttpError)
-        res.status(err.status).json({ error: err.message });
+        res.status(err.status).json({ error: err.message, field: err.field });
       else {
         console.error(err);
         res.status(err.status === 400 ? 400 : 500).json({

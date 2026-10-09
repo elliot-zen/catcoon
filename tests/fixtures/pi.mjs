@@ -19,6 +19,7 @@ process.stdin.on("data", (c) => {
       emit({
         type: "tool_execution_start",
         approvalLevel: process.env.CATCOON_APPROVAL_LEVEL,
+        processCwd: process.cwd(),
       });
       if (process.env.CATCOON_APPROVAL_LEVEL === "automatic") {
         emit({

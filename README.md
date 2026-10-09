@@ -29,7 +29,7 @@ npm start
 ## 使用
 
 1. New issue：填写标题和描述，明确目标与完成标准。
-2. 点击 Binding agents 中的 + Add，选择 Codex 或 Pi，填写该 Issue 中的 Agent description。工作目录由 `AGENT_WORKSPACE` 配置，必须已存在。
+2. 点击 Binding agents 中的 + Add，选择 Codex 或 Pi，填写该 Issue 中的 Agent description 和 Working directory。目录默认预填 `AGENT_WORKSPACE`（未配置时为服务启动目录），每个 Agent 可独立修改；必须是 Agent 运行机器上已存在、可读取和进入的绝对路径。保存失败时保留表单，并在目录字段下提示原因。绑定保存不会启动 Agent。
 3. 可再绑定另一位 Agent，例如 Codex 实现、Pi 审查。
 4. Start：Jev 读取目标、职责、历史结果，选择 Agent 执行。
 5. Needs attention：查看具体请求，Approve、Reject 并填写反馈，或回答问题。
@@ -50,7 +50,7 @@ npm start
 - Stop 不撤销已经产生的文件或外部效果；等待人工时 Stop 会保留挂起会话和审批，再次 Start 后才能处理。
 - 重启后关闭自动推进，并核对、终止上次遗留的 runtime 进程。Linux 使用 PID 与 `/proc` 进程创建时间避免误认复用的 PID；确认结束后才能重新 Start。
 - 重启会失去原生 RPC 连接，但保留人工请求内容。重新 Start 后先处理该请求，再带历史上下文规划新的 turn；新的工具操作仍需经过 runtime 自己的审批，不自动重放旧操作。
-- 有执行历史的 Binding 保留用于追溯，第一版不能删除，可以在停止后编辑职责。未决原生请求存在时不能修改目标或绑定。
+- 有执行历史的 Binding 保留用于追溯，第一版不能删除，可以在停止后编辑职责和审批级别。工作目录在首次执行前可修改；已有会话或执行历史后只读，需要新绑定来选择另一目录。未决原生请求存在时不能修改目标或绑定。
 
 ## 技术结构
 

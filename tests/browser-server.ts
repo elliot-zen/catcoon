@@ -22,6 +22,7 @@ const engine = new Orchestrator(
     },
   },
   (b, p, cb) => {
+    cb.session(`fixture-session-${b.id}`);
     let timer: NodeJS.Timeout;
     const handle = {
       stop: async () => {

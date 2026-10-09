@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, copyFileSync, chmodSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  copyFileSync,
+  chmodSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { codex } from "../server/runtime/codex.js";
@@ -23,6 +29,8 @@ for (const [name, factory] of [
   ] as [ApprovalLevel, boolean][]) {
     test(`${name}: ${approvalLevel}, ${approved ? "accept" : "reject"}, subprocess policy and completion`, async () => {
       const dir = mkdtempSync(join(tmpdir(), "catcoon-runtime-"));
+      const cwd = join(dir, "agent project");
+      mkdirSync(cwd);
       const bin = join(dir, name);
       copyFileSync(resolve(`tests/fixtures/${name}.mjs`), bin);
       chmodSync(bin, 0o755);
@@ -37,7 +45,7 @@ for (const [name, factory] of [
           runtime: name,
           approvalLevel,
           role: "Test",
-          cwd: process.cwd(),
+          cwd,
           model: "",
           sessionId: approvalLevel === "on-request" ? "existing-session" : null,
         };
@@ -99,6 +107,12 @@ for (const [name, factory] of [
           "JSON strings must retain Unicode line separators",
         );
         await closed;
+        assert.ok(
+          messages
+            .filter((m) => m.startsWith("{"))
+            .some((m) => JSON.parse(m).processCwd === cwd),
+          "Runtime subprocess must execute in the binding directory",
+        );
         assert.ok(complete);
         assert.ok(session);
         if (name === "pi") {
@@ -124,6 +138,7 @@ for (const [name, factory] of [
             configuration.sandbox,
             approvalLevel === "strict" ? "read-only" : "workspace-write",
           );
+          assert.equal(configuration.cwd, cwd);
           assert.equal(
             configuration.approvalPolicy,
             approvalLevel === "automatic" ? "never" : "on-request",
