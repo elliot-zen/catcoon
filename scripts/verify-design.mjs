@@ -199,8 +199,8 @@ try {
   await page.screenshot({ path: "/tmp/catcoon-ui-session.png" });
   assert.equal(await page.locator("dialog").count(), 0);
   const chatBox = await page.locator(".session-page").boundingBox();
-  assert.equal(chatBox.width, 800);
-  assert.equal(chatBox.x, 436);
+  assert.equal(chatBox.width, 960);
+  assert.equal(chatBox.x, 356);
   await page.locator(".breadcrumb").click();
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   await page
